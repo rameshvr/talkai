@@ -1,0 +1,25 @@
+// swift-tools-version: 6.2
+
+import PackageDescription
+
+let package = Package(
+    name: "TalkAI",
+    platforms: [
+        .macOS(.v26)
+    ],
+    products: [
+        .library(name: "TalkAICore", targets: ["TalkAICore"])
+    ],
+    targets: [
+        .target(
+            name: "TalkAICore",
+            path: "TalkAICore/Sources/TalkAICore"
+        ),
+        .executableTarget(
+            name: "TalkAI",
+            dependencies: ["TalkAICore"],
+            path: "TalkAI",
+            exclude: ["Info.plist", "TalkAI.entitlements"]
+        )
+    ]
+)
