@@ -16,5 +16,11 @@ xcuserdata/
 # Superpowers brainstorming
 .superpowers/
 
+# Docs (internal specs)
+docs/
+
+# Release artifacts
+*.dmg
+
 # Claude
 .claude/
