@@ -82,6 +82,20 @@ Access settings from the menu bar icon:
 - **AI Cleanup Prompt** — Customize how the AI polishes your text
 - **History** — View and re-copy recent transcriptions
 
+## FAQ
+
+**How is this different from built-in macOS Dictation?**
+
+Built-in Dictation transcribes your speech verbatim. TalkAI adds an AI polishing step on top — it cleans up filler words, fixes grammar, and restructures your speech into well-formed text. The cleanup prompt is fully customizable, so you can tailor it for different tasks like coding, writing emails, or taking casual notes. One press-speak-press flow, no extra steps.
+
+**Why not just use Dictation + Writing Tools?**
+
+Writing Tools requires a separate manual step after dictating — select text, invoke Writing Tools, pick a rewrite option. TalkAI combines transcription and polishing into a single action. Plus, TalkAI's prompt is customizable for specialized use cases that Writing Tools doesn't cover (e.g., "output valid Swift code" or "keep technical jargon intact").
+
+## Roadmap
+
+- **Context-aware polishing** — Capture a screenshot of the active window to give the AI visual context about what you're working on. When you're in a code editor writing React, saying "use state" becomes `useState`. In an email composer, the tone shifts to professional. In Slack, it stays casual. All processing stays on-device.
+
 ## Architecture
 
 ```
