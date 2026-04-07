@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release binary
+        run: swift build -c release
+
+      - name: Create app bundle
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          APP_BUNDLE=".build/release-app/TalkAI.app"
+
+          mkdir -p "$APP_BUNDLE/Contents/MacOS"
+          mkdir -p "$APP_BUNDLE/Contents/Resources"
+          cp .build/release/TalkAI "$APP_BUNDLE/Contents/MacOS/TalkAI"
+
+          cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleIdentifier</key>
+              <string>com.talkai.TalkAI</string>
+              <key>CFBundleName</key>
+              <string>TalkAI</string>
+              <key>CFBundleDisplayName</key>
+              <string>TalkAI</string>
+              <key>CFBundleExecutable</key>
+              <string>TalkAI</string>
+              <key>CFBundleVersion</key>
+              <string>${VERSION}</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${VERSION}</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>26.0</string>
+              <key>LSUIElement</key>
+              <true/>
+              <key>NSMicrophoneUsageDescription</key>
+              <string>TalkAI needs microphone access to capture your speech for transcription.</string>
+              <key>NSSpeechRecognitionUsageDescription</key>
+              <string>TalkAI uses on-device speech recognition to transcribe your speech.</string>
+              <key>NSPrincipalClass</key>
+              <string>NSApplication</string>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Sign app bundle
+        run: |
+          codesign --force --deep --sign - \
+            --entitlements TalkAI/TalkAI.entitlements \
+            .build/release-app/TalkAI.app
+
+      - name: Create DMG
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          DMG_DIR=".build/dmg"
+          mkdir -p "$DMG_DIR"
+          cp -R .build/release-app/TalkAI.app "$DMG_DIR/"
+          ln -s /Applications "$DMG_DIR/Applications"
+
+          hdiutil create \
+            -volname "TalkAI" \
+            -srcfolder "$DMG_DIR" \
+            -ov \
+            -format UDZO \
+            "TalkAI-v${VERSION}-mac.dmg"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          gh release create "${{ github.ref_name }}" \
+            "TalkAI-v${VERSION}-mac.dmg" \
+            --title "TalkAI v${VERSION}" \
+            --generate-notes
