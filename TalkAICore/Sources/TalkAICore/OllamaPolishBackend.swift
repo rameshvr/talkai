@@ -1,0 +1,86 @@
+import Foundation
+import os
+
+private let logger = Logger(subsystem: "com.talkai.TalkAI", category: "Ollama")
+
+/// Polishes text using a local Ollama instance.
+public final class OllamaPolishBackend: PolishBackend {
+    private let config: OllamaConfig
+
+    public var supportsVision: Bool { config.isVisionModel }
+    public let displayName = "Ollama (Local)"
+
+    public init(config: OllamaConfig) {
+        self.config = config
+    }
+
+    public var isAvailable: Bool {
+        get async {
+            guard let url = URL(string: "\(config.baseURL)/api/tags") else { return false }
+            do {
+                let (_, response) = try await URLSession.shared.data(from: url)
+                return (response as? HTTPURLResponse)?.statusCode == 200
+            } catch {
+                return false
+            }
+        }
+    }
+
+    public func polish(_ rawText: String, instruction: String, context: PolishContext) async throws -> String {
+        guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return rawText
+        }
+
+        let url = URL(string: "\(config.baseURL)/api/generate")!
+
+        let prompt = """
+            \(instruction)
+
+            Dictated text:
+            \(rawText)
+
+            Cleaned text:
+            """
+
+        var body: [String: Any] = [
+            "model": config.modelName,
+            "prompt": prompt,
+            "system": polishSystemInstruction(context: context),
+            "stream": false
+        ]
+
+        // Add screenshot for vision models
+        if config.isVisionModel, let screenshot = context.screenshot {
+            body["images"] = [screenshot.base64EncodedString()]
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 60
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                logger.error("Ollama returned non-200 status")
+                return rawText
+            }
+
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let result = json["response"] as? String
+            else {
+                logger.error("Failed to parse Ollama response")
+                return rawText
+            }
+
+            let cleaned = result.trimmingCharacters(in: .whitespacesAndNewlines)
+            logger.notice("Ollama polish succeeded: \(cleaned)")
+            return cleaned
+        } catch {
+            logger.error("Ollama request failed: \(error)")
+            return rawText
+        }
+    }
+}

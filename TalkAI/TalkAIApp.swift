@@ -4,6 +4,11 @@ import os
 
 private let logger = Logger(subsystem: "com.talkai.TalkAI", category: "App")
 
+private extension Int {
+    /// Returns self if non-zero, otherwise nil. Useful for UserDefaults int fallbacks.
+    var nonZero: Int? { self == 0 ? nil : self }
+}
+
 @main
 struct TalkAIApp: App {
     @State private var appCoordinator = AppCoordinator()
@@ -29,6 +34,7 @@ final class AppCoordinator {
     let permissionManager = PermissionManager()
     let historyStore = HistoryStore()
     let overlayController = OverlayWindowController()
+    let screenshotService = ScreenshotService()
 
     private var recordingTask: Task<Void, Never>?
 
@@ -56,12 +62,62 @@ final class AppCoordinator {
         }
     }
 
+    var useScreenshotContext: Bool {
+        UserDefaults.standard.bool(forKey: "useScreenshotContext")
+    }
+
+    func switchBackend(to type: ModelBackendType) {
+        switch type {
+        case .apple:
+            pipeline.polishService.backend = ApplePolishBackend()
+        case .ollama:
+            let config = OllamaConfig(
+                host: UserDefaults.standard.string(forKey: "ollamaHost") ?? "localhost",
+                port: UserDefaults.standard.integer(forKey: "ollamaPort").nonZero ?? 11434,
+                modelName: UserDefaults.standard.string(forKey: "ollamaModel") ?? "llama3.2",
+                isVisionModel: UserDefaults.standard.bool(forKey: "ollamaVision")
+            )
+            pipeline.polishService.backend = OllamaPolishBackend(config: config)
+        case .cloud:
+            let providerRaw = UserDefaults.standard.string(forKey: "cloudProvider") ?? CloudProvider.claude.rawValue
+            let provider = CloudProvider(rawValue: providerRaw) ?? .claude
+            let apiKey = KeychainHelper.load(key: "cloudApiKey_\(provider.rawValue)") ?? ""
+            let model = UserDefaults.standard.string(forKey: "cloudModel") ?? provider.defaultModel
+            let config = CloudConfig(provider: provider, apiKey: apiKey, modelName: model)
+            pipeline.polishService.backend = CloudPolishBackend(config: config)
+        }
+        logger.notice("Switched backend to: \(type.displayName)")
+    }
+
     func handleHotkey() {
         switch pipeline.state {
         case .idle:
-            overlayController.show(pipeline: pipeline)
-            recordingTask = Task {
-                await pipeline.start()
+            // Capture context BEFORE showing overlay so we get the user's actual working window
+            let metadata = screenshotService.activeAppMetadata()
+
+            if useScreenshotContext && pipeline.polishService.backend.supportsVision {
+                // Capture screenshot async, then start recording
+                Task {
+                    let screenshot = await screenshotService.captureActiveWindow()
+                    pipeline.context = PolishContext(
+                        appName: metadata.appName,
+                        windowTitle: metadata.windowTitle,
+                        screenshot: screenshot
+                    )
+                    overlayController.show(pipeline: pipeline)
+                    recordingTask = Task {
+                        await pipeline.start()
+                    }
+                }
+            } else {
+                pipeline.context = PolishContext(
+                    appName: metadata.appName,
+                    windowTitle: metadata.windowTitle
+                )
+                overlayController.show(pipeline: pipeline)
+                recordingTask = Task {
+                    await pipeline.start()
+                }
             }
         case .recording:
             recordingTask?.cancel()
@@ -89,18 +145,10 @@ final class AppCoordinator {
             let result = await waitForPipelineResult()
 
             if let result {
-                logger.error("Got result, polished: \(result.polishedText)")
+                logger.info("Got result, polished: \(result.polishedText)")
                 historyStore.add(result)
 
-                // Write to clipboard and paste
-                let pasteboard = NSPasteboard.general
-                pasteboard.clearContents()
-                pasteboard.setString(result.polishedText, forType: .string)
-                logger.error("Clipboard set. Simulating paste...")
-
-                // Small delay then simulate Cmd+V
-                try? await Task.sleep(for: .milliseconds(150))
-                pasteManager.simulatePaste()
+                await pasteManager.paste(result.polishedText)
 
                 // Show "Pasted!" briefly
                 try? await Task.sleep(for: .seconds(1.5))

@@ -9,19 +9,22 @@ public final class TranscriptionPipeline: @unchecked Sendable {
     public private(set) var state: PipelineState = .idle
 
     private let speechService: SpeechService
-    private let polishService: PolishService
+    public let polishService: PolishService
     private var processingTask: Task<Void, Never>?
 
     public var polishInstruction: String = PolishService.defaultInstruction
 
-    public init(locale: Locale = .current) {
+    /// Context about the user's active application, set before stopping.
+    public var context: PolishContext?
+
+    public init(locale: Locale = .current, backend: any PolishBackend = ApplePolishBackend()) {
         self.speechService = SpeechService(locale: locale)
-        self.polishService = PolishService()
+        self.polishService = PolishService(backend: backend)
     }
 
-    /// Whether the on-device LLM is available for polishing.
+    /// Whether the current backend is available for polishing.
     public var isLLMAvailable: Bool {
-        polishService.isAvailable
+        polishService.isAppleBackendAvailable
     }
 
     /// Update the locale used for speech recognition.
@@ -71,7 +74,11 @@ public final class TranscriptionPipeline: @unchecked Sendable {
                 await MainActor.run { state = .polishing }
                 logger.notice("Polishing text...")
 
-                let polishedText = try await polishService.polish(rawText, instruction: polishInstruction)
+                let polishedText = try await polishService.polish(
+                    rawText,
+                    instruction: polishInstruction,
+                    context: context ?? PolishContext()
+                )
                 logger.notice("Polished text: '\(polishedText)'")
 
                 let result = TranscriptionResult(rawText: rawText, polishedText: polishedText)
