@@ -9,13 +9,16 @@ struct SettingsView: View {
             GeneralTab(coordinator: coordinator)
                 .tabItem { Label("General", systemImage: "gear") }
 
+            ModelTab(coordinator: coordinator)
+                .tabItem { Label("Model", systemImage: "cpu") }
+
             HistoryTab(historyStore: coordinator.historyStore)
                 .tabItem { Label("History", systemImage: "clock") }
 
             PermissionsTab(permissionManager: coordinator.permissionManager)
                 .tabItem { Label("Permissions", systemImage: "lock.shield") }
         }
-        .frame(width: 480, height: 360)
+        .frame(width: 480, height: 420)
     }
 }
 
@@ -75,6 +78,154 @@ private struct GeneralTab: View {
         }
         .formStyle(.grouped)
         .padding()
+    }
+}
+
+// MARK: - Model Tab
+
+private struct ModelTab: View {
+    let coordinator: AppCoordinator
+
+    @AppStorage("modelBackendType") private var backendType = ModelBackendType.apple.rawValue
+    @AppStorage("useScreenshotContext") private var useScreenshotContext = false
+
+    // Ollama settings
+    @AppStorage("ollamaHost") private var ollamaHost = "localhost"
+    @AppStorage("ollamaPort") private var ollamaPort = 11434
+    @AppStorage("ollamaModel") private var ollamaModel = "llama3.2"
+    @AppStorage("ollamaVision") private var ollamaVision = false
+
+    // Cloud settings
+    @AppStorage("cloudProvider") private var cloudProvider = CloudProvider.claude.rawValue
+    @AppStorage("cloudModel") private var cloudModel = ""
+    @State private var apiKey: String = ""
+    @State private var connectionStatus: String?
+
+    var body: some View {
+        Form {
+            Section("Backend") {
+                Picker("Model Backend", selection: $backendType) {
+                    Text("Apple On-Device").tag(ModelBackendType.apple.rawValue)
+                    Text("Ollama (Local)").tag(ModelBackendType.ollama.rawValue)
+                    Text("Cloud API").tag(ModelBackendType.cloud.rawValue)
+                }
+                .onChange(of: backendType) { _, newValue in
+                    coordinator.switchBackend(to: ModelBackendType(rawValue: newValue) ?? .apple)
+                }
+
+                Toggle("Use screenshot context", isOn: $useScreenshotContext)
+                Text("When enabled, captures a screenshot of your active window to help the AI understand what you're working on. Requires Screen Recording permission.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if backendType == ModelBackendType.ollama.rawValue {
+                Section("Ollama Configuration") {
+                    TextField("Host", text: $ollamaHost)
+                    TextField("Port", value: $ollamaPort, format: .number)
+                    TextField("Model Name", text: $ollamaModel)
+                    Toggle("Vision Model", isOn: $ollamaVision)
+                    Text("Enable if your model supports images (e.g. llava, llama3.2-vision)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    HStack {
+                        Button("Test Connection") {
+                            Task {
+                                connectionStatus = "Testing..."
+                                let config = OllamaConfig(
+                                    host: ollamaHost,
+                                    port: ollamaPort,
+                                    modelName: ollamaModel,
+                                    isVisionModel: ollamaVision
+                                )
+                                let backend = OllamaPolishBackend(config: config)
+                                let available = await backend.isAvailable
+                                connectionStatus = available ? "Connected" : "Failed to connect"
+                            }
+                        }
+                        if let status = connectionStatus {
+                            Text(status)
+                                .font(.caption)
+                                .foregroundStyle(status == "Connected" ? .green : .red)
+                        }
+                    }
+                }
+                .onChange(of: ollamaHost) { _, _ in updateOllamaBackend() }
+                .onChange(of: ollamaPort) { _, _ in updateOllamaBackend() }
+                .onChange(of: ollamaModel) { _, _ in updateOllamaBackend() }
+                .onChange(of: ollamaVision) { _, _ in updateOllamaBackend() }
+            }
+
+            if backendType == ModelBackendType.cloud.rawValue {
+                Section("Cloud API Configuration") {
+                    Picker("Provider", selection: $cloudProvider) {
+                        Text("Claude").tag(CloudProvider.claude.rawValue)
+                        Text("OpenAI").tag(CloudProvider.openai.rawValue)
+                    }
+                    .onChange(of: cloudProvider) { _, newValue in
+                        let provider = CloudProvider(rawValue: newValue) ?? .claude
+                        if cloudModel.isEmpty || cloudModel == CloudProvider.claude.defaultModel || cloudModel == CloudProvider.openai.defaultModel {
+                            cloudModel = provider.defaultModel
+                        }
+                        updateCloudBackend()
+                    }
+
+                    SecureField("API Key", text: $apiKey)
+                        .onChange(of: apiKey) { _, newValue in
+                            let provider = CloudProvider(rawValue: cloudProvider) ?? .claude
+                            KeychainHelper.save(key: "cloudApiKey_\(provider.rawValue)", value: newValue)
+                            updateCloudBackend()
+                        }
+
+                    TextField("Model Name", text: $cloudModel)
+                        .onChange(of: cloudModel) { _, _ in updateCloudBackend() }
+
+                    HStack {
+                        Button("Test Connection") {
+                            Task {
+                                connectionStatus = "Testing..."
+                                let provider = CloudProvider(rawValue: cloudProvider) ?? .claude
+                                let config = CloudConfig(provider: provider, apiKey: apiKey, modelName: cloudModel)
+                                let backend = CloudPolishBackend(config: config)
+                                let available = await backend.isAvailable
+                                connectionStatus = available ? "Connected" : "Failed — check API key"
+                            }
+                        }
+                        if let status = connectionStatus {
+                            Text(status)
+                                .font(.caption)
+                                .foregroundStyle(status == "Connected" ? .green : .red)
+                        }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .onAppear {
+            let provider = CloudProvider(rawValue: cloudProvider) ?? .claude
+            apiKey = KeychainHelper.load(key: "cloudApiKey_\(provider.rawValue)") ?? ""
+            if cloudModel.isEmpty {
+                cloudModel = provider.defaultModel
+            }
+        }
+    }
+
+    private func updateOllamaBackend() {
+        let config = OllamaConfig(
+            host: ollamaHost,
+            port: ollamaPort,
+            modelName: ollamaModel,
+            isVisionModel: ollamaVision
+        )
+        coordinator.pipeline.polishService.backend = OllamaPolishBackend(config: config)
+    }
+
+    private func updateCloudBackend() {
+        let provider = CloudProvider(rawValue: cloudProvider) ?? .claude
+        let config = CloudConfig(provider: provider, apiKey: apiKey, modelName: cloudModel)
+        coordinator.pipeline.polishService.backend = CloudPolishBackend(config: config)
     }
 }
 
@@ -151,9 +302,17 @@ private struct PermissionsTab: View {
 
             PermissionRow(
                 title: "Apple Intelligence",
-                description: "Required for AI text cleanup",
+                description: "Required for AI text cleanup (Apple backend)",
                 granted: permissionManager.appleIntelligenceAvailable,
                 action: { permissionManager.openAppleIntelligenceSettings() },
+                actionLabel: "Open Settings"
+            )
+
+            PermissionRow(
+                title: "Screen Recording",
+                description: "Optional — enables screenshot context for AI polishing",
+                granted: permissionManager.screenRecordingGranted,
+                action: { permissionManager.openScreenRecordingSettings() },
                 actionLabel: "Open Settings"
             )
         }
