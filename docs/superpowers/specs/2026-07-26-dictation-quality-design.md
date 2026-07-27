@@ -22,7 +22,7 @@ TalkAI today misses all four in the user's configuration:
 
 ## Decisions (agreed with user)
 
-- **Transcription:** embed **whisper.cpp** (Metal-accelerated, C API linked from Swift). The user's installed Python `openai-whisper` proves Whisper accuracy but is too slow to shell out to interactively. Existing Apple `SpeechService` remains as a selectable fallback STT.
+- **Transcription:** embed **WhisperKit** (SPM-native, CoreML/ANE-accelerated Whisper with decoder prompt biasing and in-app model downloads). *Amended from whisper.cpp during planning: whisper.cpp removed SPM support (xcframework-only), and TalkAI is a pure SPM package with no Xcode project — WhisperKit delivers the same design intent and actually integrates.* The user's installed Python `openai-whisper` proves Whisper accuracy but is too slow to shell out to interactively. Existing Apple `SpeechService` remains as a selectable fallback STT.
 - **Screen context via OCR, not a vision LLM:** Apple Vision framework (`VNRecognizeTextRequest`, accurate mode) extracts on-screen text. Vision framework is independent of Apple Intelligence and works with it off.
 - **Polish:** toggleable LLM rewrite stage. Default backend: **Ollama with a small text-only model (`qwen2.5:3b`, ~2 GB)** — OCR removes the need for vision models. Polish **off** = Whisper output pasted directly.
 - VibeVoice-ASR-7B rejected: same weight class as the heavy models already ruled out.
@@ -49,7 +49,7 @@ Hotkey release
 
 ### Components
 
-**`OCRService`** (new, app target — alongside `ScreenshotService`, which produces its input): takes `CGImage`, returns recognized text lines. `HotwordExtractor` goes in TalkAICore (pure logic, unit-testable without app entitlements). `VNRecognizeTextRequest` with `.accurate`, language correction on.
+**`OCRService`** (new, TalkAICore — *amended during planning: Vision needs no entitlements, and TalkAICore placement makes OCR unit-testable with rendered fixture images*): takes PNG `Data`, returns recognized text lines. `HotwordExtractor` also in TalkAICore (pure logic). `VNRecognizeTextRequest` with `.accurate`, language correction on.
 
 **`HotwordExtractor`** (new, pure function — unit-testable): screen text → ranked hotword string. Heuristics: capitalized multi-word names, camelCase/snake_case identifiers, words not in system dictionary; dedupe; cap total length. Output feeds both Whisper `initial_prompt` and the polish prompt's "terms on screen" list.
 
