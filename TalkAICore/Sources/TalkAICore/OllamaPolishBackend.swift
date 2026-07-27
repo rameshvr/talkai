@@ -40,7 +40,8 @@ public final class OllamaPolishBackend: PolishBackend {
             "prompt": prompt,
             "system": polishSystemInstruction(context: context),
             "stream": false,
-            "options": ["temperature": 0.2]
+            "options": ["temperature": 0.2],
+            "keep_alive": "30m"
         ]
 
         // Add screenshot for vision models
@@ -80,5 +81,19 @@ public final class OllamaPolishBackend: PolishBackend {
             logger.error("Ollama request failed: \(error)")
             throw PolishError.network(error.localizedDescription)
         }
+    }
+
+    /// Loads the model into Ollama's memory without generating (empty prompt),
+    /// so the first real polish doesn't pay the multi-second cold-load.
+    public func warmUp() async {
+        guard let url = URL(string: "\(config.baseURL)/api/generate") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = PipelineTiming.requestTimeout
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "model": config.modelName, "keep_alive": "30m"
+        ])
+        _ = try? await URLSession.shared.data(for: request)
     }
 }

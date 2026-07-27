@@ -142,7 +142,9 @@ final class AppCoordinator {
                 modelName: UserDefaults.standard.string(forKey: "ollamaModel") ?? "qwen2.5:3b",
                 isVisionModel: UserDefaults.standard.bool(forKey: "ollamaVision")
             )
-            pipeline.polishService.backend = OllamaPolishBackend(config: config)
+            let ollamaBackend = OllamaPolishBackend(config: config)
+            pipeline.polishService.backend = ollamaBackend
+            Task { await ollamaBackend.warmUp() }
         case .cloud:
             let providerRaw = UserDefaults.standard.string(forKey: "cloudProvider") ?? CloudProvider.claude.rawValue
             let provider = CloudProvider(rawValue: providerRaw) ?? .claude
