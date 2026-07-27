@@ -27,7 +27,7 @@ let package = Package(
         ),
         .testTarget(
             name: "TalkAICoreTests",
-            dependencies: ["TalkAICore"],
+            dependencies: ["TalkAICore", .product(name: "WhisperKit", package: "whisperkit")],
             path: "TalkAICore/Tests/TalkAICoreTests"
         )
     ]
