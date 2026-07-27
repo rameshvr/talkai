@@ -39,7 +39,8 @@ public final class OllamaPolishBackend: PolishBackend {
             "model": config.modelName,
             "prompt": prompt,
             "system": polishSystemInstruction(context: context),
-            "stream": false
+            "stream": false,
+            "options": ["temperature": 0.2]
         ]
 
         // Add screenshot for vision models
@@ -50,30 +51,34 @@ public final class OllamaPolishBackend: PolishBackend {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 60
+        request.timeoutInterval = PipelineTiming.requestTimeout
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
 
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                logger.error("Ollama returned non-200 status")
-                return rawText
+                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                let bodyText = String(data: data, encoding: .utf8) ?? ""
+                logger.error("Ollama returned \(code)")
+                throw PolishError.httpError(code, bodyText)
             }
 
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let result = json["response"] as? String
             else {
                 logger.error("Failed to parse Ollama response")
-                return rawText
+                throw PolishError.parseFailure
             }
 
             let cleaned = result.trimmingCharacters(in: .whitespacesAndNewlines)
-            logger.notice("Ollama polish succeeded: \(cleaned)")
+            logger.notice("Ollama polish succeeded")
             return cleaned
+        } catch let error as PolishError {
+            throw error
         } catch {
             logger.error("Ollama request failed: \(error)")
-            return rawText
+            throw PolishError.network(error.localizedDescription)
         }
     }
 }

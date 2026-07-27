@@ -90,11 +90,40 @@ public struct TranscriptionResult: Sendable, Codable, Identifiable {
     public let rawText: String
     public let polishedText: String
     public let date: Date
+    /// Non-nil when polish failed and polishedText fell back to rawText.
+    public let polishError: String?
 
-    public init(rawText: String, polishedText: String) {
+    public init(rawText: String, polishedText: String, polishError: String? = nil) {
         self.id = UUID()
         self.rawText = rawText
         self.polishedText = polishedText
         self.date = Date()
+        self.polishError = polishError
     }
+}
+
+// MARK: - Errors & Timing
+
+/// Errors thrown by polish backends. Callers surface these — never swallow.
+public enum PolishError: Error, LocalizedError, Sendable {
+    case backendUnavailable(String)
+    case httpError(Int, String)
+    case parseFailure
+    case network(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .backendUnavailable(let name): "\(name) is not available."
+        case .httpError(let code, let body): "Backend returned HTTP \(code): \(String(body.prefix(200)))"
+        case .parseFailure: "Could not parse the backend response."
+        case .network(let msg): "Network error: \(msg)"
+        }
+    }
+}
+
+/// Single source of truth for pipeline timing. The result wait MUST exceed
+/// the per-request timeout so late polish results are never dropped.
+public enum PipelineTiming {
+    public static let requestTimeout: TimeInterval = 60
+    public static let resultWaitTimeout: TimeInterval = 75
 }

@@ -25,7 +25,7 @@ public final class CloudPolishBackend: PolishBackend {
 
         guard config.isConfigured else {
             logger.warning("Cloud API key not configured")
-            return rawText
+            throw PolishError.backendUnavailable(displayName)
         }
 
         switch config.provider {
@@ -68,6 +68,7 @@ public final class CloudPolishBackend: PolishBackend {
             "model": config.modelName,
             "max_tokens": 4096,
             "system": systemInstruction,
+            "temperature": 0.2,
             "messages": [
                 ["role": "user", "content": content]
             ]
@@ -78,19 +79,17 @@ public final class CloudPolishBackend: PolishBackend {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(config.apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        request.timeoutInterval = 60
+        request.timeoutInterval = PipelineTiming.requestTimeout
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        return try await executeRequest(request, rawText: rawText, parser: parseClaudeResponse)
+        return try await executeRequest(request, parser: parseClaudeResponse)
     }
 
     private func parseClaudeResponse(_ data: Data) -> String? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let content = json["content"] as? [[String: Any]],
-              let firstBlock = content.first,
-              let text = firstBlock["text"] as? String
+              let content = json["content"] as? [[String: Any]]
         else { return nil }
-        return text
+        return content.first { ($0["type"] as? String) == "text" }?["text"] as? String
     }
 
     // MARK: - OpenAI
@@ -122,6 +121,7 @@ public final class CloudPolishBackend: PolishBackend {
         let body: [String: Any] = [
             "model": config.modelName,
             "max_tokens": 4096,
+            "temperature": 0.2,
             "messages": [
                 [
                     "role": "system",
@@ -135,10 +135,10 @@ public final class CloudPolishBackend: PolishBackend {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 60
+        request.timeoutInterval = PipelineTiming.requestTimeout
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        return try await executeRequest(request, rawText: rawText, parser: parseOpenAIResponse)
+        return try await executeRequest(request, parser: parseOpenAIResponse)
     }
 
     private func parseOpenAIResponse(_ data: Data) -> String? {
@@ -155,7 +155,6 @@ public final class CloudPolishBackend: PolishBackend {
 
     private func executeRequest(
         _ request: URLRequest,
-        rawText: String,
         parser: (Data) -> String?
     ) async throws -> String {
         do {
@@ -163,26 +162,28 @@ public final class CloudPolishBackend: PolishBackend {
 
             guard let httpResponse = response as? HTTPURLResponse else {
                 logger.error("Invalid response type")
-                return rawText
+                throw PolishError.network("invalid response")
             }
 
             guard httpResponse.statusCode == 200 else {
                 let body = String(data: data, encoding: .utf8) ?? "no body"
                 logger.error("Cloud API returned \(httpResponse.statusCode): \(body)")
-                return rawText
+                throw PolishError.httpError(httpResponse.statusCode, body)
             }
 
             guard let result = parser(data) else {
                 logger.error("Failed to parse cloud API response")
-                return rawText
+                throw PolishError.parseFailure
             }
 
             let cleaned = result.trimmingCharacters(in: .whitespacesAndNewlines)
-            logger.notice("Cloud polish succeeded: \(cleaned)")
+            logger.notice("Cloud polish succeeded")
             return cleaned
+        } catch let error as PolishError {
+            throw error
         } catch {
             logger.error("Cloud request failed: \(error)")
-            return rawText
+            throw PolishError.network(error.localizedDescription)
         }
     }
 }

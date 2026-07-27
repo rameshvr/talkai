@@ -14,6 +14,9 @@ public final class TranscriptionPipeline: @unchecked Sendable {
 
     public var polishInstruction: String = PolishService.defaultInstruction
 
+    /// When false, skip the polish stage entirely and paste raw transcription.
+    public var polishEnabled: Bool = true
+
     /// Context about the user's active application, set before stopping.
     public var context: PolishContext?
 
@@ -71,17 +74,25 @@ public final class TranscriptionPipeline: @unchecked Sendable {
                     return
                 }
 
-                await MainActor.run { state = .polishing }
-                logger.notice("Polishing text...")
+                var polishedText = rawText
+                var polishError: String? = nil
 
-                let polishedText = try await polishService.polish(
-                    rawText,
-                    instruction: polishInstruction,
-                    context: context ?? PolishContext()
-                )
-                logger.notice("Polished text: '\(polishedText)'")
+                if polishEnabled {
+                    await MainActor.run { state = .polishing }
+                    logger.notice("Polishing text...")
+                    do {
+                        polishedText = try await polishService.polish(
+                            rawText,
+                            instruction: polishInstruction,
+                            context: context ?? PolishContext()
+                        )
+                    } catch {
+                        logger.error("Polish failed, pasting raw text: \(error.localizedDescription)")
+                        polishError = error.localizedDescription
+                    }
+                }
 
-                let result = TranscriptionResult(rawText: rawText, polishedText: polishedText)
+                let result = TranscriptionResult(rawText: rawText, polishedText: polishedText, polishError: polishError)
                 await MainActor.run { state = .done(result) }
                 logger.notice("Pipeline complete, state = done")
             } catch {
