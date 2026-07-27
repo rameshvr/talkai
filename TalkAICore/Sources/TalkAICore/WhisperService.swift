@@ -44,6 +44,13 @@ final class WhisperAudioRecorder: @unchecked Sendable {
         commonFormat: .pcmFormatFloat32, sampleRate: whisperSampleRate, channels: 1, interleaved: false
     )!
 
+    /// Frames captured so far — lets tests verify the mic is actually
+    /// delivering audio without draining the recording.
+    var capturedFrameCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return frameCount
+    }
+
     func prepare(inputFormat: AVAudioFormat) {
         lock.lock(); defer { lock.unlock() }
         self.inputFormat = inputFormat
@@ -125,20 +132,55 @@ public final class WhisperService: TranscriptionBackend, @unchecked Sendable {
     private let modelName: String
     private let language: String?
     private var whisperKit: WhisperKit?
+    private let loadLock = NSLock()
+    private var loadTask: Task<Void, Error>?
+    /// Created lazily on first capture and reused for every recording —
+    /// stopped between recordings but never discarded. Recreating the engine
+    /// per recording tears down and rebuilds its HAL aggregate device each
+    /// time; in the app process every rebuilt instance recorded pure silence
+    /// while the first one worked (unified-log evidence in
+    /// .superpowers/sdd/2026-07-26-dictation-quality/debug-empty-audio-report.md).
     private var audioEngine: AVAudioEngine?
     private let recorder = WhisperAudioRecorder()
+
+    /// Frames captured in the in-progress recording (test/diagnostic peek).
+    var capturedFrameCount: Int { recorder.capturedFrameCount }
 
     public init(modelName: String = WhisperModelOption.baseEn.rawValue, language: String? = "en") {
         self.modelName = modelName
         self.language = language
     }
 
-    /// Downloads (if needed) and loads the CoreML model. Idempotent.
+    /// Downloads (if needed) and loads the CoreML model. Idempotent, and
+    /// safe to call concurrently: all callers await one shared load instead
+    /// of racing `whisperKit == nil` and loading the model twice.
     public func preloadModel() async throws {
         guard whisperKit == nil else { return }
-        logger.notice("Loading Whisper model: \(self.modelName)")
-        whisperKit = try await WhisperKit(WhisperKitConfig(model: modelName))
-        logger.notice("Whisper model ready")
+        let task = modelLoadTask()
+        do {
+            try await task.value
+        } catch {
+            clearFailedLoadTask(task)  // allow retry after failure
+            throw error
+        }
+    }
+
+    private func clearFailedLoadTask(_ task: Task<Void, Error>) {
+        loadLock.lock(); defer { loadLock.unlock() }
+        if loadTask == task { loadTask = nil }
+    }
+
+    /// Returns the single in-flight load task, creating it if needed.
+    private func modelLoadTask() -> Task<Void, Error> {
+        loadLock.lock(); defer { loadLock.unlock() }
+        if let loadTask { return loadTask }
+        let task = Task {
+            logger.notice("Loading Whisper model: \(self.modelName)")
+            self.whisperKit = try await WhisperKit(WhisperKitConfig(model: self.modelName))
+            logger.notice("Whisper model ready")
+        }
+        loadTask = task
+        return task
     }
 
     public func startCapture() async throws {
@@ -148,8 +190,12 @@ public final class WhisperService: TranscriptionBackend, @unchecked Sendable {
         // Kick off model load concurrently with recording — usually cached.
         Task { try? await self.preloadModel() }
 
-        let engine = AVAudioEngine()
+        let engine = audioEngine ?? AVAudioEngine()
+        audioEngine = engine
         let input = engine.inputNode
+        // Clear any tap left behind by an aborted previous run — installing
+        // a second tap on the same bus crashes.
+        input.removeTap(onBus: 0)
         let format = input.outputFormat(forBus: 0)
         recorder.prepare(inputFormat: format)
         let recorder = self.recorder
@@ -158,13 +204,11 @@ public final class WhisperService: TranscriptionBackend, @unchecked Sendable {
         }
         engine.prepare()
         try engine.start()
-        audioEngine = engine
     }
 
     public func stopCapture(hotwordPrompt: String?) async throws -> String {
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
-        audioEngine = nil
         let samples = recorder.finish()
         guard !samples.isEmpty else { return "" }
 
@@ -192,7 +236,6 @@ public final class WhisperService: TranscriptionBackend, @unchecked Sendable {
     public func cancelCapture() async {
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
-        audioEngine = nil
         _ = recorder.finish()
     }
 }
