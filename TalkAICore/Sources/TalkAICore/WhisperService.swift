@@ -24,64 +24,94 @@ public enum WhisperModelOption: String, CaseIterable, Sendable {
     }
 }
 
-/// Accumulates microphone audio as 16 kHz mono Float32 — Whisper's input format.
+/// Accumulates microphone audio at its native format and converts to 16 kHz
+/// mono Float32 — Whisper's input format — in one shot at `finish()`.
+///
+/// Resampling per-tap (every ~1024 frames / ~21ms) would cold-start and
+/// force-flush the converter's FIR filter at every buffer boundary, injecting
+/// a filtering artifact at every one of those boundaries for the whole
+/// recording. Deferring the resample to a single call over the full,
+/// raw-rate recording avoids that: the artifact only occurs once, at the
+/// very edges of the utterance. Whisper transcription only ever happens
+/// after `stopCapture()`, so there's no latency cost to waiting.
 final class WhisperAudioRecorder: @unchecked Sendable {
     static let whisperSampleRate: Double = 16_000
     private let lock = NSLock()
-    private var samples: [Float] = []
-    private var converter: AVAudioConverter?
+    private var inputFormat: AVAudioFormat?
+    private var channelSamples: [[Float]] = []
+    private var frameCount = 0
     private let outputFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32, sampleRate: whisperSampleRate, channels: 1, interleaved: false
     )!
 
     func prepare(inputFormat: AVAudioFormat) {
         lock.lock(); defer { lock.unlock() }
-        samples = []
-        converter = AVAudioConverter(from: inputFormat, to: outputFormat)
+        self.inputFormat = inputFormat
+        channelSamples = Array(repeating: [], count: Int(inputFormat.channelCount))
+        frameCount = 0
     }
 
+    /// Stores this buffer's raw samples at the hardware's native rate/channel count.
     func append(_ buffer: AVAudioPCMBuffer) {
         lock.lock(); defer { lock.unlock() }
-        guard let converter else { return }
-        let ratio = outputFormat.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 16
-        guard let out = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return }
+        guard let channelData = buffer.floatChannelData else { return }
+        let frames = Int(buffer.frameLength)
+        for channel in 0..<channelSamples.count {
+            channelSamples[channel].append(contentsOf: UnsafeBufferPointer(start: channelData[channel], count: frames))
+        }
+        frameCount += frames
+    }
+
+    /// Converts the whole accumulated recording to 16 kHz mono Float32 in a single pass.
+    func finish() -> [Float] {
+        lock.lock(); defer { lock.unlock() }
+        let inputFormat = self.inputFormat
+        let channelSamples = self.channelSamples
+        let frameCount = self.frameCount
+        self.inputFormat = nil
+        self.channelSamples = []
+        self.frameCount = 0
+
+        guard let inputFormat, frameCount > 0,
+              let converter = AVAudioConverter(from: inputFormat, to: outputFormat),
+              let inBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(frameCount)),
+              let inChannelData = inBuffer.floatChannelData
+        else { return [] }
+        inBuffer.frameLength = AVAudioFrameCount(frameCount)
+        for channel in 0..<channelSamples.count {
+            channelSamples[channel].withUnsafeBufferPointer { source in
+                inChannelData[channel].update(from: source.baseAddress!, count: frameCount)
+            }
+        }
+
+        let ratio = outputFormat.sampleRate / inputFormat.sampleRate
+        let capacity = AVAudioFrameCount((Double(frameCount) * ratio).rounded(.up)) + 16
+        guard let out = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return [] }
         var error: NSError?
         // convert(to:error:withInputFrom:) invokes this block synchronously on the
         // calling thread, but its type is @Sendable — nonisolated(unsafe) avoids a
         // spurious strict-concurrency warning on this single-threaded mutable flag.
         nonisolated(unsafe) var fed = false
         converter.convert(to: out, error: &error) { _, outStatus in
+            // .endOfStream (rather than .noDataNow) tells the converter to
+            // synthesize any remaining trailing filter-latency samples as
+            // silence right now instead of waiting for more input that will
+            // never arrive — without it, ~15% of the tail is silently dropped.
             if fed { outStatus.pointee = .endOfStream; return nil }
             fed = true
             outStatus.pointee = .haveData
-            return buffer
+            return inBuffer
         }
-        // AVAudioConverter buffers "trailing frames" of filter latency internally and
-        // only flushes them once the input signals .endOfStream; without a reset here,
-        // every call after the first would return 0 frames (the converter treats the
-        // stream as finished). Resetting after each self-contained buffer keeps sample
-        // counts accurate per `append` call, at the cost of minor filtering artifacts
-        // at each buffer boundary.
-        converter.reset()
-        guard error == nil, let channel = out.floatChannelData else { return }
-        samples.append(contentsOf: UnsafeBufferPointer(start: channel[0], count: Int(out.frameLength)))
-    }
-
-    func finish() -> [Float] {
-        lock.lock(); defer { lock.unlock() }
-        let result = samples
-        samples = []
-        converter = nil
-        return result
+        guard error == nil, let outChannel = out.floatChannelData else { return [] }
+        return Array(UnsafeBufferPointer(start: outChannel[0], count: Int(out.frameLength)))
     }
 }
 
-enum WhisperServiceError: Error, LocalizedError {
+public enum WhisperServiceError: Error, LocalizedError {
     case modelNotLoaded
     case microphonePermissionDenied
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .modelNotLoaded: "Whisper model is not downloaded yet. Open Settings → General to download it."
         case .microphonePermissionDenied: "Microphone permission is required. Please grant access in System Settings."
