@@ -37,7 +37,11 @@ final class AppCoordinator {
     let screenshotService = ScreenshotService()
 
     private var recordingTask: Task<Void, Never>?
+    private var contextTask: Task<Void, Never>?
     private var permissionCheckTask: Task<Void, Never>?
+
+    /// Error message from the most recent polish failure (raw text was pasted).
+    var lastPolishError: String?
 
     var menuBarIcon: String {
         switch pipeline.state {
@@ -62,6 +66,9 @@ final class AppCoordinator {
             }
         }
         startPermissionMonitor()
+        switchSTTEngine()
+        syncPolishSettings()
+        switchBackend(to: currentBackendType)
     }
 
     /// Periodically checks accessibility permission and retries event tap setup when granted.
@@ -90,6 +97,31 @@ final class AppCoordinator {
         UserDefaults.standard.bool(forKey: "useScreenshotContext")
     }
 
+    var currentBackendType: ModelBackendType {
+        ModelBackendType(rawValue: UserDefaults.standard.string(forKey: "modelBackendType") ?? "") ?? .apple
+    }
+
+    /// Rebuild the STT backend from settings. Whisper is the default.
+    func switchSTTEngine() {
+        let engine = UserDefaults.standard.string(forKey: "sttEngine") ?? "whisper"
+        if engine == "apple" {
+            let lang = UserDefaults.standard.string(forKey: "selectedLanguage") ?? "en-US"
+            let apple = SpeechService(locale: Locale(identifier: lang))
+            pipeline.setSTTBackend(apple)
+        } else {
+            let model = UserDefaults.standard.string(forKey: "whisperModel") ?? WhisperModelOption.baseEn.rawValue
+            let lang = UserDefaults.standard.string(forKey: "selectedLanguage") ?? "en-US"
+            let whisperLang = String(lang.prefix(2))  // "en-US" → "en"
+            pipeline.setSTTBackend(WhisperService(modelName: model, language: whisperLang))
+        }
+        logger.notice("STT engine: \(engine)")
+    }
+
+    /// Sync polish enablement from settings.
+    func syncPolishSettings() {
+        pipeline.polishEnabled = UserDefaults.standard.object(forKey: "polishEnabled") as? Bool ?? true
+    }
+
     func switchBackend(to type: ModelBackendType) {
         switch type {
         case .apple:
@@ -98,7 +130,7 @@ final class AppCoordinator {
             let config = OllamaConfig(
                 host: UserDefaults.standard.string(forKey: "ollamaHost") ?? "localhost",
                 port: UserDefaults.standard.integer(forKey: "ollamaPort").nonZero ?? 11434,
-                modelName: UserDefaults.standard.string(forKey: "ollamaModel") ?? "llama3.2",
+                modelName: UserDefaults.standard.string(forKey: "ollamaModel") ?? "qwen2.5:3b",
                 isVisionModel: UserDefaults.standard.bool(forKey: "ollamaVision")
             )
             pipeline.polishService.backend = OllamaPolishBackend(config: config)
@@ -121,32 +153,49 @@ final class AppCoordinator {
 
         switch pipeline.state {
         case .idle:
-            // Capture context BEFORE showing overlay so we get the user's actual working window
+            // Capture context BEFORE showing the overlay so we read the
+            // user's actual working window, not ours.
             let metadata = screenshotService.activeAppMetadata()
+            let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            let fieldText = FocusedFieldReader.focusedFieldText()
+            let wantsScreenContext = useScreenshotContext
+            let backendSupportsVision = pipeline.polishService.backend.supportsVision
 
-            if useScreenshotContext && pipeline.polishService.backend.supportsVision {
-                // Capture screenshot async, then start recording
-                Task {
+            // Metadata-only context is available immediately.
+            pipeline.context = PolishContext(
+                appName: metadata.appName,
+                windowTitle: metadata.windowTitle,
+                focusedFieldText: fieldText,
+                appBundleID: bundleID
+            )
+            pipeline.hotwordPrompt = nil
+
+            if wantsScreenContext {
+                // Screenshot must happen before recording begins;
+                // OCR runs while the user is speaking.
+                contextTask = Task { [weak self] in
+                    guard let self else { return }
                     let screenshot = await screenshotService.captureActiveWindow()
+                    var screenText: String?
+                    if let screenshot {
+                        screenText = await OCRService.recognizeText(in: screenshot)
+                    }
+                    let hotwords = screenText.map { HotwordExtractor.extract(from: $0) } ?? []
                     pipeline.context = PolishContext(
                         appName: metadata.appName,
                         windowTitle: metadata.windowTitle,
-                        screenshot: screenshot
+                        screenshot: backendSupportsVision ? screenshot : nil,
+                        screenText: screenText,
+                        focusedFieldText: fieldText,
+                        appBundleID: bundleID
                     )
-                    overlayController.show(pipeline: pipeline)
-                    recordingTask = Task {
-                        await pipeline.start()
-                    }
+                    pipeline.hotwordPrompt = HotwordExtractor.prompt(from: hotwords)
                 }
-            } else {
-                pipeline.context = PolishContext(
-                    appName: metadata.appName,
-                    windowTitle: metadata.windowTitle
-                )
-                overlayController.show(pipeline: pipeline)
-                recordingTask = Task {
-                    await pipeline.start()
-                }
+            }
+
+            overlayController.show(pipeline: pipeline)
+            recordingTask = Task {
+                await pipeline.start()
             }
         case .recording:
             recordingTask?.cancel()
@@ -160,26 +209,27 @@ final class AppCoordinator {
     func handleCancel() async {
         recordingTask?.cancel()
         recordingTask = nil
+        contextTask?.cancel()
+        contextTask = nil
         await pipeline.cancel()
         overlayController.hide()
     }
 
     private func stopAndProcess() {
-        // stop() is synchronous — it sets state and kicks off a Task internally
-        pipeline.stop()
-
-        // Watch for pipeline completion in a separate task
         Task {
-            // Wait for the pipeline to reach a terminal state
+            // Ensure OCR/hotwords finished before transcription consumes them.
+            await contextTask?.value
+            contextTask = nil
+            pipeline.stop()
+
             let result = await waitForPipelineResult()
 
             if let result {
                 logger.info("Got result, polished: \(result.polishedText)")
+                lastPolishError = result.polishError
                 historyStore.add(result)
 
                 await pasteManager.paste(result.polishedText)
-
-                // Show "Pasted!" briefly
                 try? await Task.sleep(for: .seconds(1.5))
             }
 
@@ -190,8 +240,8 @@ final class AppCoordinator {
 
     /// Waits for pipeline to reach .done or .error state.
     private func waitForPipelineResult() async -> TranscriptionResult? {
-        // Use withCheckedContinuation to avoid polling
-        for _ in 0..<600 { // max 30 seconds (600 * 50ms)
+        let iterations = Int(PipelineTiming.resultWaitTimeout / 0.05)
+        for _ in 0..<iterations { // exceeds backend requestTimeout — late results are never dropped
             switch pipeline.state {
             case .done(let result):
                 return result
@@ -245,8 +295,15 @@ struct MenuBarView: View {
 
         Divider()
 
-        if !coordinator.pipeline.isLLMAvailable {
-            Label("Apple Intelligence unavailable", systemImage: "exclamationmark.triangle")
+        if let polishError = coordinator.lastPolishError {
+            Label("Last AI cleanup failed — raw text was pasted", systemImage: "exclamationmark.circle")
+            Text(polishError)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+
+        if coordinator.currentBackendType == .apple && !coordinator.pipeline.isLLMAvailable {
+            Label("Apple Intelligence unavailable — switch Model backend in Settings", systemImage: "exclamationmark.triangle")
         }
 
         SettingsLink {
