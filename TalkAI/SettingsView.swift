@@ -94,6 +94,7 @@ private struct GeneralTab: View {
                 }
                 .onChange(of: selectedLanguage) { _, newValue in
                     coordinator.pipeline.setLocale(Locale(identifier: newValue))
+                    coordinator.switchSTTEngine()
                 }
             }
 
@@ -419,7 +420,7 @@ private struct PermissionsTab: View {
 
             PermissionRow(
                 title: "Screen Recording",
-                description: "Optional — enables screenshot context for AI polishing",
+                description: "Optional — enables screen context for AI polishing",
                 granted: permissionManager.screenRecordingGranted,
                 action: { permissionManager.openScreenRecordingSettings() },
                 actionLabel: "Open Settings"

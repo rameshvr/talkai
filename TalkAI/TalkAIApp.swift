@@ -69,7 +69,15 @@ final class AppCoordinator {
         startPermissionMonitor()
         switchSTTEngine()
         syncPolishSettings()
-        switchBackend(to: currentBackendType)
+
+        let preferredBackend = currentBackendType
+        switchBackend(to: preferredBackend)
+        if preferredBackend == .apple && !pipeline.isLLMAvailable {
+            // Runtime-only fallback — the user's stored "modelBackendType" preference
+            // is left untouched so Apple is retried automatically once available.
+            logger.notice("Apple Intelligence unavailable at launch, falling back to Ollama for this session")
+            switchBackend(to: .ollama)
+        }
     }
 
     /// Periodically checks accessibility permission and retries event tap setup when granted.
@@ -242,6 +250,9 @@ final class AppCoordinator {
                 historyStore.add(result)
 
                 await pasteManager.paste(result.polishedText)
+                try? await Task.sleep(for: .seconds(1.5))
+            } else if case .error = pipeline.state {
+                // Dwell so the user can actually read the error before it disappears.
                 try? await Task.sleep(for: .seconds(1.5))
             }
 

@@ -130,6 +130,8 @@ public final class TranscriptionPipeline: @unchecked Sendable {
 
     /// Reset to idle state after consuming a result.
     public func reset() {
+        processingTask?.cancel()
+        processingTask = nil
         state = .idle
     }
 }
