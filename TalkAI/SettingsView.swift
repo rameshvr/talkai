@@ -27,8 +27,12 @@ struct SettingsView: View {
 private struct GeneralTab: View {
     let coordinator: AppCoordinator
 
+    @AppStorage("sttEngine") private var sttEngine = "whisper"
+    @AppStorage("whisperModel") private var whisperModel = WhisperModelOption.baseEn.rawValue
+    @AppStorage("polishEnabled") private var polishEnabled = true
     @AppStorage("polishInstruction") private var polishInstruction = PolishService.defaultInstruction
     @AppStorage("selectedLanguage") private var selectedLanguage = "en-US"
+    @State private var modelDownloadStatus: String?
 
     private let languages = [
         ("en-US", "English (US)"),
@@ -52,6 +56,36 @@ private struct GeneralTab: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Transcription Engine") {
+                Picker("Engine", selection: $sttEngine) {
+                    Text("Whisper (recommended)").tag("whisper")
+                    Text("Apple Speech").tag("apple")
+                }
+                .onChange(of: sttEngine) { _, _ in coordinator.switchSTTEngine() }
+
+                if sttEngine == "whisper" {
+                    Picker("Whisper Model", selection: $whisperModel) {
+                        ForEach(WhisperModelOption.allCases, id: \.rawValue) { option in
+                            Text(option.label).tag(option.rawValue)
+                        }
+                    }
+                    .onChange(of: whisperModel) { _, _ in
+                        coordinator.switchSTTEngine()
+                        downloadModel()
+                    }
+
+                    HStack {
+                        Button("Download / Verify Model") { downloadModel() }
+                        if let status = modelDownloadStatus {
+                            Text(status).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Text("Models download once (from Hugging Face) and then run fully offline.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Language") {
                 Picker("Transcription Language", selection: $selectedLanguage) {
                     ForEach(languages, id: \.0) { code, name in
@@ -63,7 +97,13 @@ private struct GeneralTab: View {
                 }
             }
 
-            Section("AI Cleanup Prompt") {
+            Section("AI Cleanup") {
+                Toggle("Polish with AI", isOn: $polishEnabled)
+                    .onChange(of: polishEnabled) { _, _ in coordinator.syncPolishSettings() }
+                Text("When off, the raw transcription is pasted directly.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 TextEditor(text: $polishInstruction)
                     .font(.system(.body, design: .monospaced))
                     .frame(height: 80)
@@ -79,6 +119,19 @@ private struct GeneralTab: View {
         .formStyle(.grouped)
         .padding()
     }
+
+    private func downloadModel() {
+        modelDownloadStatus = "Downloading…"
+        let service = WhisperService(modelName: whisperModel, language: nil)
+        Task {
+            do {
+                try await service.preloadModel()
+                modelDownloadStatus = "Ready"
+            } catch {
+                modelDownloadStatus = "Failed: \(error.localizedDescription)"
+            }
+        }
+    }
 }
 
 // MARK: - Model Tab
@@ -92,7 +145,7 @@ private struct ModelTab: View {
     // Ollama settings
     @AppStorage("ollamaHost") private var ollamaHost = "localhost"
     @AppStorage("ollamaPort") private var ollamaPort = 11434
-    @AppStorage("ollamaModel") private var ollamaModel = "llama3.2"
+    @AppStorage("ollamaModel") private var ollamaModel = "qwen2.5:3b"
     @AppStorage("ollamaVision") private var ollamaVision = false
 
     // Cloud settings
@@ -115,8 +168,8 @@ private struct ModelTab: View {
                     coordinator.switchBackend(to: ModelBackendType(rawValue: newValue) ?? .apple)
                 }
 
-                Toggle("Use screenshot context", isOn: $useScreenshotContext)
-                Text("When enabled, captures a screenshot of your active window to help the AI understand what you're working on. Requires Screen Recording permission.")
+                Toggle("Use screen context", isOn: $useScreenshotContext)
+                Text("Captures your active window, extracts on-screen text on-device, and uses it to correct names and technical terms — with every backend. Requires Screen Recording permission.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -358,7 +411,7 @@ private struct PermissionsTab: View {
 
             PermissionRow(
                 title: "Apple Intelligence",
-                description: "Required for AI text cleanup (Apple backend)",
+                description: "Only needed for the Apple On-Device polish backend",
                 granted: permissionManager.appleIntelligenceAvailable,
                 action: { permissionManager.openAppleIntelligenceSettings() },
                 actionLabel: "Open Settings"
