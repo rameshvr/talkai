@@ -23,6 +23,11 @@ else
     NEEDS_SIGN=false
 fi
 
+# Copy SPM resource bundles (WhisperKit tokenizer/config resources)
+for bundle in .build/debug/*.bundle; do
+    [ -e "$bundle" ] && cp -R "$bundle" "$APP_BUNDLE/Contents/Resources/"
+done
+
 # Create Info.plist with bundle identifier
 cat > "$APP_BUNDLE/Contents/Info.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

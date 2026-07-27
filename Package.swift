@@ -10,9 +10,13 @@ let package = Package(
     products: [
         .library(name: "TalkAICore", targets: ["TalkAICore"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0")
+    ],
     targets: [
         .target(
             name: "TalkAICore",
+            dependencies: [.product(name: "WhisperKit", package: "whisperkit")],
             path: "TalkAICore/Sources/TalkAICore"
         ),
         .executableTarget(
