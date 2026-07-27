@@ -11,14 +11,11 @@ public enum OCRService {
     /// or nil when the image is unreadable or contains no text.
     public static func recognizeText(in pngData: Data) async -> String? {
         await withCheckedContinuation { continuation in
-            let lock = NSLock()
-            var resumed = false
+            let resumed = OSAllocatedUnfairLock(initialState: false)
 
             let request = VNRecognizeTextRequest { request, error in
-                lock.lock()
-                defer { lock.unlock() }
-                guard !resumed else { return }
-                resumed = true
+                let shouldResume = resumed.withLock { if $0 { return false }; $0 = true; return true }
+                guard shouldResume else { return }
 
                 if let error {
                     logger.warning("OCR failed: \(error.localizedDescription)")
@@ -37,10 +34,8 @@ public enum OCRService {
                 do {
                     try handler.perform([request])
                 } catch {
-                    lock.lock()
-                    defer { lock.unlock() }
-                    guard !resumed else { return }
-                    resumed = true
+                    let shouldResume = resumed.withLock { if $0 { return false }; $0 = true; return true }
+                    guard shouldResume else { return }
 
                     logger.warning("OCR handler failed: \(error.localizedDescription)")
                     continuation.resume(returning: nil)
