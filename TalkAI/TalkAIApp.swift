@@ -208,6 +208,7 @@ final class AppCoordinator {
             }
         case .recording:
             guard !isStopping else { break }
+            isStopping = true
             recordingTask?.cancel()
             recordingTask = nil
             stopAndProcess()
@@ -228,10 +229,6 @@ final class AppCoordinator {
 
     private func stopAndProcess() {
         Task {
-            // Re-entrancy guard: a second hotkey press while this task is
-            // suspended awaiting contextTask must not spawn a second stop.
-            isStopping = true
-
             // Ensure OCR/hotwords finished before transcription consumes them.
             await contextTask?.value
             contextTask = nil
