@@ -21,7 +21,12 @@ public func polishSystemInstruction(context: PolishContext) -> String {
     if let app = context.appName { parts.append(app) }
     if let title = context.windowTitle { parts.append("window: \(title)") }
     if !parts.isEmpty {
-        instruction += " The user is currently typing in: \(parts.joined(separator: ", ")). Use this context to better understand their dictated text."
+        instruction += " The user is currently typing in: \(parts.joined(separator: ", "))."
+    }
+    if context.screenshot != nil {
+        instruction += " A screenshot of the user's active window is attached. Use it to understand the visual context — such as code, documents, UI elements, or data on screen — to make the rewritten text more accurate and relevant. For example, use correct variable names, technical terms, or proper nouns visible on screen."
+    } else if !parts.isEmpty {
+        instruction += " Use this context to better understand their dictated text."
     }
     return instruction
 }

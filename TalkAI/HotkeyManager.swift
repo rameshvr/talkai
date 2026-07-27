@@ -9,6 +9,9 @@ final class HotkeyManager {
     var onHotkeyPressed: (@Sendable () -> Void)?
     var onEscPressed: (@Sendable () -> Void)?
 
+    /// Whether the event tap is active and receiving events.
+    private(set) var isActive = false
+
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
@@ -27,6 +30,13 @@ final class HotkeyManager {
             logger.warning("Requested accessibility permission. Event tap will not work until granted.")
         }
 
+        setupEventTap()
+    }
+
+    /// Tear down existing tap and re-create it. Call after accessibility is granted.
+    func retrySetup() {
+        guard !isActive else { return }
+        removeEventTap()
         setupEventTap()
     }
 
@@ -64,6 +74,7 @@ final class HotkeyManager {
             userInfo: contextPtr
         ) else {
             Unmanaged<HotkeyContext>.fromOpaque(contextPtr).release()
+            isActive = false
             logger.error("Failed to create event tap. Accessibility permission required.")
             return
         }
@@ -76,6 +87,7 @@ final class HotkeyManager {
         if let source = runLoopSource {
             CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
+            isActive = true
             logger.notice("Event tap enabled and running")
         }
     }
@@ -89,6 +101,7 @@ final class HotkeyManager {
         }
         runLoopSource = nil
         eventTap = nil
+        isActive = false
     }
 }
 

@@ -37,6 +37,7 @@ final class AppCoordinator {
     let screenshotService = ScreenshotService()
 
     private var recordingTask: Task<Void, Never>?
+    private var permissionCheckTask: Task<Void, Never>?
 
     var menuBarIcon: String {
         switch pipeline.state {
@@ -58,6 +59,29 @@ final class AppCoordinator {
         hotkeyManager.onEscPressed = { [weak self] in
             Task { @MainActor in
                 await self?.handleCancel()
+            }
+        }
+        startPermissionMonitor()
+    }
+
+    /// Periodically checks accessibility permission and retries event tap setup when granted.
+    private func startPermissionMonitor() {
+        permissionCheckTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                guard let self else { return }
+                permissionManager.checkAccessibility()
+                // If permission was just granted and event tap isn't active, retry
+                if permissionManager.accessibilityGranted && !hotkeyManager.isActive {
+                    hotkeyManager.retrySetup()
+                    if hotkeyManager.isActive {
+                        logger.notice("Event tap established after permission grant")
+                    }
+                }
+                // Stop polling once everything is working
+                if permissionManager.accessibilityGranted && hotkeyManager.isActive {
+                    return
+                }
             }
         }
     }
@@ -90,6 +114,11 @@ final class AppCoordinator {
     }
 
     func handleHotkey() {
+        if !permissionManager.accessibilityGranted {
+            permissionManager.openAccessibilitySettings()
+            return
+        }
+
         switch pipeline.state {
         case .idle:
             // Capture context BEFORE showing overlay so we get the user's actual working window
@@ -184,25 +213,34 @@ struct MenuBarView: View {
     let coordinator: AppCoordinator
 
     var body: some View {
-        switch coordinator.pipeline.state {
-        case .idle:
-            Button("Start Recording (Right ⌥)") {
-                coordinator.handleHotkey()
+        if !coordinator.permissionManager.accessibilityGranted {
+            Label("Accessibility Required", systemImage: "exclamationmark.triangle")
+            Text("Hotkey and paste won't work without Accessibility permission.")
+                .font(.caption)
+            Button("Grant Accessibility Access") {
+                coordinator.permissionManager.openAccessibilitySettings()
             }
-        case .recording:
-            Button("Stop Recording (Right ⌥)") {
-                coordinator.handleHotkey()
+        } else {
+            switch coordinator.pipeline.state {
+            case .idle:
+                Button("Start Recording (Right ⌥)") {
+                    coordinator.handleHotkey()
+                }
+            case .recording:
+                Button("Stop Recording (Right ⌥)") {
+                    coordinator.handleHotkey()
+                }
+            case .transcribing:
+                Text("Transcribing...")
+            case .polishing:
+                Text("Polishing...")
+            case .done:
+                Text("Pasted!")
+            case .error(let message):
+                Text("Error: \(message)")
+            case .cancelled:
+                Text("Cancelled")
             }
-        case .transcribing:
-            Text("Transcribing...")
-        case .polishing:
-            Text("Polishing...")
-        case .done:
-            Text("Pasted!")
-        case .error(let message):
-            Text("Error: \(message)")
-        case .cancelled:
-            Text("Cancelled")
         }
 
         Divider()

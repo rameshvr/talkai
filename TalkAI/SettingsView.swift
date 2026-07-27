@@ -100,6 +100,8 @@ private struct ModelTab: View {
     @AppStorage("cloudModel") private var cloudModel = ""
     @State private var apiKey: String = ""
     @State private var connectionStatus: String?
+    @State private var availableOllamaModels: [String] = []
+    @State private var isFetchingModels = false
 
     var body: some View {
         Form {
@@ -123,7 +125,30 @@ private struct ModelTab: View {
                 Section("Ollama Configuration") {
                     TextField("Host", text: $ollamaHost)
                     TextField("Port", value: $ollamaPort, format: .number)
-                    TextField("Model Name", text: $ollamaModel)
+                    HStack {
+                        if availableOllamaModels.isEmpty {
+                            TextField("Model Name", text: $ollamaModel)
+                        } else {
+                            Picker("Model", selection: $ollamaModel) {
+                                ForEach(availableOllamaModels, id: \.self) { model in
+                                    Text(model).tag(model)
+                                }
+                            }
+                        }
+                        Button {
+                            Task { await fetchOllamaModels() }
+                        } label: {
+                            if isFetchingModels {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(isFetchingModels)
+                    }
+
                     Toggle("Vision Model", isOn: $ollamaVision)
                     Text("Enable if your model supports images (e.g. llava, llama3.2-vision)")
                         .font(.caption)
@@ -151,8 +176,15 @@ private struct ModelTab: View {
                         }
                     }
                 }
-                .onChange(of: ollamaHost) { _, _ in updateOllamaBackend() }
-                .onChange(of: ollamaPort) { _, _ in updateOllamaBackend() }
+                .task { await fetchOllamaModels() }
+                .onChange(of: ollamaHost) { _, _ in
+                    updateOllamaBackend()
+                    Task { await fetchOllamaModels() }
+                }
+                .onChange(of: ollamaPort) { _, _ in
+                    updateOllamaBackend()
+                    Task { await fetchOllamaModels() }
+                }
                 .onChange(of: ollamaModel) { _, _ in updateOllamaBackend() }
                 .onChange(of: ollamaVision) { _, _ in updateOllamaBackend() }
             }
@@ -209,6 +241,30 @@ private struct ModelTab: View {
             if cloudModel.isEmpty {
                 cloudModel = provider.defaultModel
             }
+        }
+    }
+
+    private func fetchOllamaModels() async {
+        isFetchingModels = true
+        defer { isFetchingModels = false }
+
+        guard let url = URL(string: "http://\(ollamaHost):\(ollamaPort)/api/tags") else { return }
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return }
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let models = json["models"] as? [[String: Any]]
+            else { return }
+
+            let names = models.compactMap { $0["name"] as? String }.sorted()
+            await MainActor.run {
+                availableOllamaModels = names
+                if !names.isEmpty && !names.contains(ollamaModel) {
+                    ollamaModel = names[0]
+                }
+            }
+        } catch {
+            // Fetch failed — keep text field fallback
         }
     }
 
