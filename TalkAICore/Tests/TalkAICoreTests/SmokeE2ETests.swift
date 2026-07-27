@@ -37,6 +37,9 @@ struct SmokeE2ETests {
 
         // Downloads base.en (~150MB) from Hugging Face on first run.
         let whisperKit = try await WhisperKit(WhisperKitConfig(model: WhisperModelOption.baseEn.rawValue))
+        // Models load lazily; without this the tokenizer is nil and the
+        // prompt branch below is silently skipped, testing nothing.
+        try await whisperKit.loadModels()
 
         // Mirror WhisperService.stopCapture's DecodingOptions, including the
         // hotword prefill-prompt path.
@@ -50,6 +53,9 @@ struct SmokeE2ETests {
             if !tokens.isEmpty {
                 options.promptTokens = tokens
                 options.usePrefillPrompt = true
+                // Mirrors WhisperService's workaround for WhisperKit 0.18's
+                // first-token gate misfiring on prompted decodes.
+                options.firstTokenLogProbThreshold = nil
             }
         }
 

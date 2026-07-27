@@ -82,12 +82,12 @@ final class WhisperAudioRecorder: @unchecked Sendable {
             channelSamples[channel].append(contentsOf: UnsafeBufferPointer(start: channelData[channel], count: frames))
         }
         frameCount += frames
-        // Log the first and every 50th callback (~once per second) so logs
-        // distinguish "tap never fires" from "tap fires with zero-filled buffers".
-        if tapCallbacks == 1 || tapCallbacks % 50 == 0 {
+        // Log the first callback so logs distinguish "tap never fires" from
+        // "tap fires with zero-filled buffers"; stopCapture logs the totals.
+        if tapCallbacks == 1 {
             var peak: Float = 0
             for i in 0..<frames { peak = max(peak, abs(channelData[0][i])) }
-            logger.notice("tap #\(self.tapCallbacks, privacy: .public): cumFrames=\(self.frameCount, privacy: .public) bufMaxAbs=\(peak, privacy: .public)")
+            logger.notice("tap #1: frames=\(frames, privacy: .public) bufMaxAbs=\(peak, privacy: .public)")
         }
     }
 
@@ -160,11 +160,8 @@ public final class WhisperService: TranscriptionBackend, @unchecked Sendable {
     private let loadLock = NSLock()
     private var loadTask: Task<Void, Error>?
     /// Created lazily on first capture and reused for every recording —
-    /// stopped between recordings but never discarded. Recreating the engine
-    /// per recording tears down and rebuilds its HAL aggregate device each
-    /// time; in the app process every rebuilt instance recorded pure silence
-    /// while the first one worked (unified-log evidence in
-    /// .superpowers/sdd/2026-07-26-dictation-quality/debug-empty-audio-report.md).
+    /// stopped between recordings but never discarded, so the HAL aggregate
+    /// device is built once per process instead of on every recording.
     private var audioEngine: AVAudioEngine?
     /// Keeps the AVAudioEngineConfigurationChange observer alive (diagnostics).
     private var configChangeObserver: (any NSObjectProtocol)?
@@ -203,7 +200,11 @@ public final class WhisperService: TranscriptionBackend, @unchecked Sendable {
         if let loadTask { return loadTask }
         let task = Task {
             logger.notice("Loading Whisper model: \(self.modelName)")
-            self.whisperKit = try await WhisperKit(WhisperKitConfig(model: self.modelName))
+            // load: true loads the CoreML models (and tokenizer) now — the
+            // default defers to the first transcribe, which left
+            // `whisperKit.tokenizer` nil in stopCapture and silently dropped
+            // the hotword prompt on the first recording of a session.
+            self.whisperKit = try await WhisperKit(WhisperKitConfig(model: self.modelName, load: true))
             logger.notice("Whisper model ready")
         }
         loadTask = task
@@ -267,6 +268,13 @@ public final class WhisperService: TranscriptionBackend, @unchecked Sendable {
             if !tokens.isEmpty {
                 options.promptTokens = tokens
                 options.usePrefillPrompt = true
+                // WhisperKit 0.18 misapplies its first-token quality gate to
+                // prompted decodes: with promptTokens the KV prefill cache is
+                // disabled, so "first token" lands on the model's continuation
+                // of <|startofprev|> — a free-text guess whose logprob is
+                // always below the -1.5 default. Every temperature fallback
+                // then fails the same way and the transcript comes back empty.
+                options.firstTokenLogProbThreshold = nil
             }
         }
 

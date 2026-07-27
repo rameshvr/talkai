@@ -64,9 +64,10 @@ struct WhisperCaptureCycleTests {
         }
     }
 
-    /// Reproduces the bug at the WhisperService level: two full
-    /// startCapture → stopCapture cycles with the real WhisperKit model load
-    /// and transcription in between, exactly like the app's runs 1 and 2.
+    /// Two full startCapture → stopCapture cycles with the real WhisperKit
+    /// model load and transcription in between, exactly like the app's runs
+    /// 1 and 2 — including OCR hotword prompts on BOTH cycles, the path that
+    /// returned empty transcripts on every recording after the first.
     @Test func secondWhisperServiceRecordingCapturesAudio() async throws {
         guard ProcessInfo.processInfo.environment["TALKAI_SMOKE"] == "1" else { return }
 
@@ -76,7 +77,7 @@ struct WhisperCaptureCycleTests {
             try await Task.sleep(for: .seconds(1.5))
             let frames = service.capturedFrameCount
             print("DIAG service cycle \(cycle) capturedFrames=\(frames)")
-            let transcript = try await service.stopCapture(hotwordPrompt: nil)
+            let transcript = try await service.stopCapture(hotwordPrompt: "Glossary: TalkAI.")
             print("DIAG service cycle \(cycle) transcript='\(transcript)'")
             #expect(frames > 0, "cycle \(cycle): recorder captured no frames")
         }
