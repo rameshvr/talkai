@@ -8,7 +8,7 @@ private let logger = Logger(subsystem: "com.talkai.TalkAI", category: "Pipeline"
 public final class TranscriptionPipeline: @unchecked Sendable {
     public private(set) var state: PipelineState = .idle
 
-    private let speechService: SpeechService
+    private var sttBackend: any TranscriptionBackend
     public let polishService: PolishService
     private var processingTask: Task<Void, Never>?
 
@@ -17,11 +17,17 @@ public final class TranscriptionPipeline: @unchecked Sendable {
     /// When false, skip the polish stage entirely and paste raw transcription.
     public var polishEnabled: Bool = true
 
+    /// Glossary line biasing STT recognition. Set before stop().
+    public var hotwordPrompt: String?
+
     /// Context about the user's active application, set before stopping.
     public var context: PolishContext?
 
-    public init(locale: Locale = .current, backend: any PolishBackend = ApplePolishBackend()) {
-        self.speechService = SpeechService(locale: locale)
+    public init(
+        sttBackend: any TranscriptionBackend = SpeechService(),
+        backend: any PolishBackend = ApplePolishBackend()
+    ) {
+        self.sttBackend = sttBackend
         self.polishService = PolishService(backend: backend)
     }
 
@@ -30,9 +36,15 @@ public final class TranscriptionPipeline: @unchecked Sendable {
         polishService.isAppleBackendAvailable
     }
 
-    /// Update the locale used for speech recognition.
+    /// Swap the STT engine. Ignored while recording/processing.
+    public func setSTTBackend(_ backend: any TranscriptionBackend) {
+        guard case .idle = state else { return }
+        sttBackend = backend
+    }
+
+    /// Update the locale used for speech recognition (Apple backend only).
     public func setLocale(_ locale: Locale) {
-        speechService.locale = locale
+        (sttBackend as? SpeechService)?.locale = locale
     }
 
     /// Start recording. Transitions state from idle → recording.
@@ -45,7 +57,7 @@ public final class TranscriptionPipeline: @unchecked Sendable {
         do {
             state = .recording
             logger.notice("Starting capture...")
-            try await speechService.startCapture()
+            try await sttBackend.startCapture()
             logger.notice("Capture started successfully")
         } catch {
             logger.error("Failed to start recording: \(error.localizedDescription)")
@@ -65,7 +77,7 @@ public final class TranscriptionPipeline: @unchecked Sendable {
 
         processingTask = Task {
             do {
-                let rawText = try await speechService.stopCapture()
+                let rawText = try await sttBackend.stopCapture(hotwordPrompt: hotwordPrompt)
                 logger.notice("Raw transcription: '\(rawText)'")
 
                 guard !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -109,7 +121,7 @@ public final class TranscriptionPipeline: @unchecked Sendable {
     /// Cancel the current operation and return to idle.
     public func cancel() async {
         logger.notice("Cancelling...")
-        await speechService.cancelCapture()
+        await sttBackend.cancelCapture()
         processingTask?.cancel()
         processingTask = nil
         state = .cancelled
