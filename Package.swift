@@ -20,6 +20,11 @@ let package = Package(
             dependencies: ["TalkAICore"],
             path: "TalkAI",
             exclude: ["Info.plist", "TalkAI.entitlements"]
+        ),
+        .testTarget(
+            name: "TalkAICoreTests",
+            dependencies: ["TalkAICore"],
+            path: "TalkAICore/Tests/TalkAICoreTests"
         )
     ]
 )
