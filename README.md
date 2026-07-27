@@ -45,7 +45,7 @@ Requires Xcode 26 and macOS 26.
 TalkAI runs a two-stage local pipeline:
 
 1. **Speech-to-text** — [WhisperKit](https://github.com/argmaxinc/WhisperKit) transcribes your speech on-device (Apple's `SpeechTranscriber` is also available as an alternate engine). While you speak, TalkAI optionally captures the active window and uses on-device Vision OCR to read the text on screen, then feeds those words to Whisper as hotword bias — so names, identifiers, and technical terms it can see are more likely to be recognized correctly.
-2. **AI polish** — the raw transcript is cleaned up by a local or on-device LLM: [Ollama](https://ollama.com) (default, `qwen2.5:3b`), Apple's on-device Foundation Models, or a cloud API if you opt in. When screen context is enabled, the same on-screen text and window/app metadata are passed to the polish step too, so the AI can match tone and terminology to what you're working on.
+2. **AI polish** — the raw transcript is cleaned up by a local or on-device LLM: [Ollama](https://ollama.com) (`qwen2.5:3b`), Apple's on-device Foundation Models (default), or a cloud API if you opt in. When screen context is enabled, the same on-screen text and window/app metadata are passed to the polish step too, so the AI can match tone and terminology to what you're working on.
 
 Everything runs locally by default — no audio, screenshot, or text leaves your Mac unless you deliberately choose the Cloud API backend.
 
@@ -62,7 +62,7 @@ Everything runs locally by default — no audio, screenshot, or text leaves your
 - macOS 26 or later
 - Apple Silicon (M1 or later)
 - Optional, for the **Apple** polish backend: Apple Intelligence enabled (System Settings → Apple Intelligence & Siri)
-- Optional, for the **Ollama** polish backend (default): [Ollama](https://ollama.com) installed and running locally with a model pulled (e.g. `ollama pull qwen2.5:3b`)
+- Optional, for the **Ollama** polish backend: [Ollama](https://ollama.com) installed and running locally with a model pulled (e.g. `ollama pull qwen2.5:3b`)
 - Optional: Screen Recording permission, only needed if you enable "Use screen context"
 
 ## Permissions
