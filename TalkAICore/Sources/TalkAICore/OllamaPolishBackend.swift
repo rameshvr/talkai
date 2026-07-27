@@ -33,14 +33,7 @@ public final class OllamaPolishBackend: PolishBackend {
 
         let url = URL(string: "\(config.baseURL)/api/generate")!
 
-        let prompt = """
-            \(instruction)
-
-            Dictated text:
-            \(rawText)
-
-            Cleaned text:
-            """
+        let prompt = polishUserPrompt(rawText: rawText, instruction: instruction, context: context)
 
         var body: [String: Any] = [
             "model": config.modelName,

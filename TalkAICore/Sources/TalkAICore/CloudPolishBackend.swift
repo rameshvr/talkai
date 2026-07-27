@@ -41,14 +41,7 @@ public final class CloudPolishBackend: PolishBackend {
     private func polishWithClaude(_ rawText: String, instruction: String, context: PolishContext) async throws -> String {
         let url = URL(string: "https://api.anthropic.com/v1/messages")!
 
-        let userPrompt = """
-            \(instruction)
-
-            Dictated text:
-            \(rawText)
-
-            Cleaned text:
-            """
+        let userPrompt = polishUserPrompt(rawText: rawText, instruction: instruction, context: context)
 
         let systemInstruction = polishSystemInstruction(context: context)
 
@@ -105,14 +98,7 @@ public final class CloudPolishBackend: PolishBackend {
     private func polishWithOpenAI(_ rawText: String, instruction: String, context: PolishContext) async throws -> String {
         let url = URL(string: "https://api.openai.com/v1/chat/completions")!
 
-        let userPrompt = """
-            \(instruction)
-
-            Dictated text:
-            \(rawText)
-
-            Cleaned text:
-            """
+        let userPrompt = polishUserPrompt(rawText: rawText, instruction: instruction, context: context)
 
         // Build content array with optional image
         var content: [[String: Any]] = []

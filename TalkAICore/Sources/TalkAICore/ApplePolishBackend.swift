@@ -25,14 +25,7 @@ public final class ApplePolishBackend: PolishBackend {
         }
 
         do {
-            let prompt = """
-                \(instruction)
-
-                Dictated text:
-                \(rawText)
-
-                Cleaned text:
-                """
+            let prompt = polishUserPrompt(rawText: rawText, instruction: instruction, context: context)
 
             let session = LanguageModelSession(
                 instructions: polishSystemInstruction(context: context)
