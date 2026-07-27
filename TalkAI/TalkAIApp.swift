@@ -39,6 +39,7 @@ final class AppCoordinator {
     private var recordingTask: Task<Void, Never>?
     private var contextTask: Task<Void, Never>?
     private var permissionCheckTask: Task<Void, Never>?
+    private var isStopping = false
 
     /// Error message from the most recent polish failure (raw text was pasted).
     var lastPolishError: String?
@@ -176,11 +177,19 @@ final class AppCoordinator {
                 contextTask = Task { [weak self] in
                     guard let self else { return }
                     let screenshot = await screenshotService.captureActiveWindow()
+                    guard !Task.isCancelled else { return }
+
                     var screenText: String?
                     if let screenshot {
                         screenText = await OCRService.recognizeText(in: screenshot)
                     }
+                    guard !Task.isCancelled else { return }
+
                     let hotwords = screenText.map { HotwordExtractor.extract(from: $0) } ?? []
+                    guard !Task.isCancelled else { return }
+
+                    // A cancelled task may already be superseded by a new recording —
+                    // never let a stale capture overwrite the current one's context.
                     pipeline.context = PolishContext(
                         appName: metadata.appName,
                         windowTitle: metadata.windowTitle,
@@ -198,6 +207,7 @@ final class AppCoordinator {
                 await pipeline.start()
             }
         case .recording:
+            guard !isStopping else { break }
             recordingTask?.cancel()
             recordingTask = nil
             stopAndProcess()
@@ -211,12 +221,17 @@ final class AppCoordinator {
         recordingTask = nil
         contextTask?.cancel()
         contextTask = nil
+        isStopping = false
         await pipeline.cancel()
         overlayController.hide()
     }
 
     private func stopAndProcess() {
         Task {
+            // Re-entrancy guard: a second hotkey press while this task is
+            // suspended awaiting contextTask must not spawn a second stop.
+            isStopping = true
+
             // Ensure OCR/hotwords finished before transcription consumes them.
             await contextTask?.value
             contextTask = nil
@@ -235,6 +250,7 @@ final class AppCoordinator {
 
             overlayController.hide()
             pipeline.reset()
+            isStopping = false
         }
     }
 
