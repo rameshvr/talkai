@@ -126,12 +126,18 @@ public final class TranscriptionPipeline: @unchecked Sendable {
         processingTask = nil
         state = .cancelled
         state = .idle
+        context = nil
+        hotwordPrompt = nil
     }
 
-    /// Reset to idle state after consuming a result.
+    /// Reset to idle state after consuming a result. Clears the screenshot,
+    /// screen text, and hotword prompt gathered for the completed dictation
+    /// so they don't linger in memory until the next one.
     public func reset() {
         processingTask?.cancel()
         processingTask = nil
         state = .idle
+        context = nil
+        hotwordPrompt = nil
     }
 }

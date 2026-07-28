@@ -13,6 +13,7 @@ struct SmokeE2ETests {
         guard ProcessInfo.processInfo.environment["TALKAI_SMOKE"] == "1" else { return }
 
         let audioURL = URL(fileURLWithPath: "/tmp/talkai-smoke.aiff")
+        defer { try? FileManager.default.removeItem(at: audioURL) }
         let say = Process()
         say.executableURL = URL(fileURLWithPath: "/usr/bin/say")
         say.arguments = ["-o", audioURL.path, "Hello world, testing TalkAI dictation"]

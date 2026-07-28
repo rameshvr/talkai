@@ -40,8 +40,6 @@ final class WhisperAudioRecorder: @unchecked Sendable {
     private var inputFormat: AVAudioFormat?
     private var channelSamples: [[Float]] = []
     private var frameCount = 0
-    private var tapCallbacks = 0
-    private var nilChannelDataCount = 0
     private let outputFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32, sampleRate: whisperSampleRate, channels: 1, interleaved: false
     )!
@@ -53,42 +51,22 @@ final class WhisperAudioRecorder: @unchecked Sendable {
         return frameCount
     }
 
-    /// Tap-boundary counters for the in-progress recording (diagnostics).
-    var tapStats: (callbacks: Int, frames: Int, nilChannelData: Int) {
-        lock.lock(); defer { lock.unlock() }
-        return (tapCallbacks, frameCount, nilChannelDataCount)
-    }
-
     func prepare(inputFormat: AVAudioFormat) {
         lock.lock(); defer { lock.unlock() }
         self.inputFormat = inputFormat
         channelSamples = Array(repeating: [], count: Int(inputFormat.channelCount))
         frameCount = 0
-        tapCallbacks = 0
-        nilChannelDataCount = 0
     }
 
     /// Stores this buffer's raw samples at the hardware's native rate/channel count.
     func append(_ buffer: AVAudioPCMBuffer) {
         lock.lock(); defer { lock.unlock() }
-        tapCallbacks += 1
-        guard let channelData = buffer.floatChannelData else {
-            nilChannelDataCount += 1
-            logger.notice("tap #\(self.tapCallbacks, privacy: .public): floatChannelData is nil")
-            return
-        }
+        guard let channelData = buffer.floatChannelData else { return }
         let frames = Int(buffer.frameLength)
         for channel in 0..<channelSamples.count {
             channelSamples[channel].append(contentsOf: UnsafeBufferPointer(start: channelData[channel], count: frames))
         }
         frameCount += frames
-        // Log the first callback so logs distinguish "tap never fires" from
-        // "tap fires with zero-filled buffers"; stopCapture logs the totals.
-        if tapCallbacks == 1 {
-            var peak: Float = 0
-            for i in 0..<frames { peak = max(peak, abs(channelData[0][i])) }
-            logger.notice("tap #1: frames=\(frames, privacy: .public) bufMaxAbs=\(peak, privacy: .public)")
-        }
     }
 
     /// Converts the whole accumulated recording to 16 kHz mono Float32 in a single pass.
@@ -105,10 +83,7 @@ final class WhisperAudioRecorder: @unchecked Sendable {
               let converter = AVAudioConverter(from: inputFormat, to: outputFormat),
               let inBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(frameCount)),
               let inChannelData = inBuffer.floatChannelData
-        else {
-            logger.notice("finish: bailed — frames=\(frameCount, privacy: .public) hadFormat=\(inputFormat != nil, privacy: .public)")
-            return []
-        }
+        else { return [] }
         inBuffer.frameLength = AVAudioFrameCount(frameCount)
         for channel in 0..<channelSamples.count {
             channelSamples[channel].withUnsafeBufferPointer { source in
@@ -163,8 +138,6 @@ public final class WhisperService: TranscriptionBackend, @unchecked Sendable {
     /// stopped between recordings but never discarded, so the HAL aggregate
     /// device is built once per process instead of on every recording.
     private var audioEngine: AVAudioEngine?
-    /// Keeps the AVAudioEngineConfigurationChange observer alive (diagnostics).
-    private var configChangeObserver: (any NSObjectProtocol)?
     private let recorder = WhisperAudioRecorder()
 
     /// Frames captured in the in-progress recording (test/diagnostic peek).
@@ -218,24 +191,13 @@ public final class WhisperService: TranscriptionBackend, @unchecked Sendable {
         // Kick off model load concurrently with recording — usually cached.
         Task { try? await self.preloadModel() }
 
-        let reused = audioEngine != nil
         let engine = audioEngine ?? AVAudioEngine()
-        if !reused {
-            // A configuration change on a stopped/restarted engine is a
-            // classic silent-input cause on macOS — log every occurrence.
-            configChangeObserver = NotificationCenter.default.addObserver(
-                forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
-            ) { _ in
-                logger.notice("AVAudioEngineConfigurationChange received")
-            }
-        }
         audioEngine = engine
         let input = engine.inputNode
         // Clear any tap left behind by an aborted previous run — installing
         // a second tap on the same bus crashes.
         input.removeTap(onBus: 0)
         let format = input.outputFormat(forBus: 0)
-        logger.notice("startCapture: engine=\(reused ? "reused" : "created", privacy: .public) inputFormat sr=\(format.sampleRate, privacy: .public) ch=\(format.channelCount, privacy: .public)")
         recorder.prepare(inputFormat: format)
         let recorder = self.recorder
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
@@ -243,16 +205,12 @@ public final class WhisperService: TranscriptionBackend, @unchecked Sendable {
         }
         engine.prepare()
         try engine.start()
-        logger.notice("startCapture: engine.isRunning=\(engine.isRunning, privacy: .public)")
     }
 
     public func stopCapture(hotwordPrompt: String?) async throws -> String {
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
-        let stats = recorder.tapStats
         let samples = recorder.finish()
-        let maxAbs = samples.reduce(into: Float(0)) { $0 = max($0, abs($1)) }
-        logger.notice("stopCapture: taps=\(stats.callbacks, privacy: .public) nilData=\(stats.nilChannelData, privacy: .public) frames=\(stats.frames, privacy: .public) finishedSamples=\(samples.count, privacy: .public) maxAbs=\(maxAbs, privacy: .public)")
         guard !samples.isEmpty else { return "" }
 
         try await preloadModel()

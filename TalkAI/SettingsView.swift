@@ -312,10 +312,15 @@ private struct ModelTab: View {
 
             let names = models.compactMap { $0["name"] as? String }.sorted()
             await MainActor.run {
-                availableOllamaModels = names
-                if !names.isEmpty && !names.contains(ollamaModel) {
-                    ollamaModel = names[0]
+                if ollamaModel.isEmpty, let first = names.first {
+                    ollamaModel = first
                 }
+                // Keep the configured model selectable even if the daemon
+                // hasn't reported it yet (e.g. still downloading) — never
+                // silently switch the user off a model they configured.
+                availableOllamaModels = names.contains(ollamaModel) || ollamaModel.isEmpty
+                    ? names
+                    : (names + [ollamaModel]).sorted()
             }
         } catch {
             // Fetch failed — keep text field fallback
