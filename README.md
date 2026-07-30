@@ -42,12 +42,12 @@ Requires Xcode 26 and macOS 26.
 
 ## How It Works
 
-TalkAI uses two Apple frameworks that run entirely on your device:
+TalkAI runs a two-stage local pipeline:
 
-- **SpeechTranscriber** — Apple's on-device speech-to-text engine
-- **Foundation Models** — Apple's on-device ~3B parameter LLM (the same one powering Apple Intelligence)
+1. **Speech-to-text** — [WhisperKit](https://github.com/argmaxinc/WhisperKit) transcribes your speech on-device (Apple's `SpeechTranscriber` is also available as an alternate engine). While you speak, TalkAI optionally captures the active window and uses on-device Vision OCR to read the text on screen, then feeds those words to Whisper as hotword bias — so names, identifiers, and technical terms it can see are more likely to be recognized correctly.
+2. **AI polish** — the raw transcript is cleaned up by a local or on-device LLM: [Ollama](https://ollama.com) (`qwen2.5:3b`), Apple's on-device Foundation Models (default), or a cloud API if you opt in. When screen context is enabled, the same on-screen text and window/app metadata are passed to the polish step too, so the AI can match tone and terminology to what you're working on.
 
-No audio or text ever leaves your Mac.
+Everything runs locally by default — no audio, screenshot, or text leaves your Mac unless you deliberately choose the Cloud API backend.
 
 ## Usage
 
@@ -61,7 +61,9 @@ No audio or text ever leaves your Mac.
 
 - macOS 26 or later
 - Apple Silicon (M1 or later)
-- Apple Intelligence enabled (System Settings → Apple Intelligence & Siri)
+- Optional, for the **Apple** polish backend: Apple Intelligence enabled (System Settings → Apple Intelligence & Siri)
+- Optional, for the **Ollama** polish backend: [Ollama](https://ollama.com) installed and running locally with a model pulled (e.g. `ollama pull qwen2.5:3b`)
+- Optional: Screen Recording permission, only needed if you enable "Use screen context"
 
 ## Permissions
 
@@ -71,6 +73,8 @@ On first launch, TalkAI will ask for:
 |---|---|
 | **Microphone** | To capture your speech |
 | **Accessibility** | For global hotkey capture and paste simulation |
+| **Apple Intelligence** *(optional)* | Only needed for the Apple on-device polish backend |
+| **Screen Recording** *(optional)* | Only needed if you enable "Use screen context" |
 
 To grant Accessibility access: **System Settings → Privacy & Security → Accessibility → Enable TalkAI**
 
@@ -78,8 +82,10 @@ To grant Accessibility access: **System Settings → Privacy & Security → Acce
 
 Access settings from the menu bar icon:
 
-- **Language** — Choose transcription language (10 languages supported)
-- **AI Cleanup Prompt** — Customize how the AI polishes your text
+- **Transcription Engine** — Whisper (recommended, runs fully offline after a one-time model download) or Apple Speech; pick a Whisper model size and language
+- **AI Cleanup** — Toggle "Polish with AI" on/off, and customize the cleanup prompt
+- **Model Backend** — Choose Ollama (Local), Apple On-Device, or Cloud API for the polish step, with per-backend configuration (host/port/model for Ollama, API key/model for Cloud)
+- **Use screen context** — Capture the active window, extract on-screen text on-device via Vision OCR, and use it to bias transcription and improve AI polishing accuracy across any backend
 - **History** — View and re-copy recent transcriptions
 
 ## FAQ
@@ -92,20 +98,19 @@ Built-in Dictation transcribes your speech verbatim. TalkAI adds an AI polishing
 
 Writing Tools requires a separate manual step after dictating — select text, invoke Writing Tools, pick a rewrite option. TalkAI combines transcription and polishing into a single action. Plus, TalkAI's prompt is customizable for specialized use cases that Writing Tools doesn't cover (e.g., "output valid Swift code" or "keep technical jargon intact").
 
-## Roadmap
-
-- **Context-aware polishing** — Capture a screenshot of the active window to give the AI visual context about what you're working on. When you're in a code editor writing React, saying "use state" becomes `useState`. In an email composer, the tone shifts to professional. In Slack, it stays casual. All processing stays on-device.
-
 ## Architecture
 
 ```
 TalkAICore/          # Reusable Swift package (iOS-ready)
-├── SpeechService    # On-device speech-to-text
-├── PolishService    # On-device LLM text cleanup
+├── WhisperService   # On-device speech-to-text (WhisperKit)
+├── SpeechService    # Alternate on-device speech-to-text (Apple)
+├── OCRService       # On-device Vision OCR for screen context
+├── PolishService    # LLM text cleanup (Apple / Ollama / Cloud backends)
 └── Pipeline         # Orchestrator
 
 TalkAI/              # macOS app
 ├── HotkeyManager    # Global hotkey (CGEvent)
+├── ScreenshotService# Active window capture for screen context
 ├── PasteManager     # Clipboard + Cmd+V simulation
 ├── RecordingOverlay # Floating status indicator
 └── Settings         # Configuration UI

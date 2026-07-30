@@ -20,8 +20,7 @@ enum SpeechServiceError: Error, LocalizedError {
 }
 
 /// On-device speech-to-text using SpeechAnalyzer and SpeechTranscriber.
-@Observable
-public final class SpeechService: @unchecked Sendable {
+public final class SpeechService: TranscriptionBackend, @unchecked Sendable {
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
     private var audioEngine: AVAudioEngine?
@@ -153,6 +152,12 @@ public final class SpeechService: @unchecked Sendable {
         analyzer = nil
         transcriber = nil
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// TranscriptionBackend conformance. Apple's SpeechTranscriber has no
+    /// hotword-biasing API; the prompt is ignored here (Whisper uses it).
+    public func stopCapture(hotwordPrompt: String?) async throws -> String {
+        try await stopCapture()
     }
 
     /// Cancel capture without returning a result.

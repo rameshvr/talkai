@@ -21,18 +21,11 @@ public final class ApplePolishBackend: PolishBackend {
         }
 
         guard isAvailable else {
-            return rawText
+            throw PolishError.backendUnavailable(displayName)
         }
 
         do {
-            let prompt = """
-                \(instruction)
-
-                Dictated text:
-                \(rawText)
-
-                Cleaned text:
-                """
+            let prompt = polishUserPrompt(rawText: rawText, instruction: instruction, context: context)
 
             let session = LanguageModelSession(
                 instructions: polishSystemInstruction(context: context)
@@ -44,7 +37,7 @@ public final class ApplePolishBackend: PolishBackend {
             return result
         } catch {
             logger.error("Polish failed: \(error)")
-            return rawText
+            throw PolishError.backendUnavailable("Apple Intelligence: \(error.localizedDescription)")
         }
     }
 }

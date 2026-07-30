@@ -27,8 +27,12 @@ struct SettingsView: View {
 private struct GeneralTab: View {
     let coordinator: AppCoordinator
 
+    @AppStorage("sttEngine") private var sttEngine = "whisper"
+    @AppStorage("whisperModel") private var whisperModel = WhisperModelOption.baseEn.rawValue
+    @AppStorage("polishEnabled") private var polishEnabled = true
     @AppStorage("polishInstruction") private var polishInstruction = PolishService.defaultInstruction
     @AppStorage("selectedLanguage") private var selectedLanguage = "en-US"
+    @State private var modelDownloadStatus: String?
 
     private let languages = [
         ("en-US", "English (US)"),
@@ -52,6 +56,36 @@ private struct GeneralTab: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Transcription Engine") {
+                Picker("Engine", selection: $sttEngine) {
+                    Text("Whisper (recommended)").tag("whisper")
+                    Text("Apple Speech").tag("apple")
+                }
+                .onChange(of: sttEngine) { _, _ in coordinator.switchSTTEngine() }
+
+                if sttEngine == "whisper" {
+                    Picker("Whisper Model", selection: $whisperModel) {
+                        ForEach(WhisperModelOption.allCases, id: \.rawValue) { option in
+                            Text(option.label).tag(option.rawValue)
+                        }
+                    }
+                    .onChange(of: whisperModel) { _, _ in
+                        coordinator.switchSTTEngine()
+                        downloadModel()
+                    }
+
+                    HStack {
+                        Button("Download / Verify Model") { downloadModel() }
+                        if let status = modelDownloadStatus {
+                            Text(status).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Text("Models download once (from Hugging Face) and then run fully offline.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Language") {
                 Picker("Transcription Language", selection: $selectedLanguage) {
                     ForEach(languages, id: \.0) { code, name in
@@ -60,10 +94,17 @@ private struct GeneralTab: View {
                 }
                 .onChange(of: selectedLanguage) { _, newValue in
                     coordinator.pipeline.setLocale(Locale(identifier: newValue))
+                    coordinator.switchSTTEngine()
                 }
             }
 
-            Section("AI Cleanup Prompt") {
+            Section("AI Cleanup") {
+                Toggle("Polish with AI", isOn: $polishEnabled)
+                    .onChange(of: polishEnabled) { _, _ in coordinator.syncPolishSettings() }
+                Text("When off, the raw transcription is pasted directly.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 TextEditor(text: $polishInstruction)
                     .font(.system(.body, design: .monospaced))
                     .frame(height: 80)
@@ -79,6 +120,19 @@ private struct GeneralTab: View {
         .formStyle(.grouped)
         .padding()
     }
+
+    private func downloadModel() {
+        modelDownloadStatus = "Downloading…"
+        let service = WhisperService(modelName: whisperModel, language: nil)
+        Task {
+            do {
+                try await service.preloadModel()
+                modelDownloadStatus = "Ready"
+            } catch {
+                modelDownloadStatus = "Failed: \(error.localizedDescription)"
+            }
+        }
+    }
 }
 
 // MARK: - Model Tab
@@ -92,7 +146,7 @@ private struct ModelTab: View {
     // Ollama settings
     @AppStorage("ollamaHost") private var ollamaHost = "localhost"
     @AppStorage("ollamaPort") private var ollamaPort = 11434
-    @AppStorage("ollamaModel") private var ollamaModel = "llama3.2"
+    @AppStorage("ollamaModel") private var ollamaModel = "qwen2.5:3b"
     @AppStorage("ollamaVision") private var ollamaVision = false
 
     // Cloud settings
@@ -100,6 +154,8 @@ private struct ModelTab: View {
     @AppStorage("cloudModel") private var cloudModel = ""
     @State private var apiKey: String = ""
     @State private var connectionStatus: String?
+    @State private var availableOllamaModels: [String] = []
+    @State private var isFetchingModels = false
 
     var body: some View {
         Form {
@@ -113,8 +169,8 @@ private struct ModelTab: View {
                     coordinator.switchBackend(to: ModelBackendType(rawValue: newValue) ?? .apple)
                 }
 
-                Toggle("Use screenshot context", isOn: $useScreenshotContext)
-                Text("When enabled, captures a screenshot of your active window to help the AI understand what you're working on. Requires Screen Recording permission.")
+                Toggle("Use screen context", isOn: $useScreenshotContext)
+                Text("Captures your active window, extracts on-screen text on-device, and uses it to correct names and technical terms — with every backend. Requires Screen Recording permission.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -123,7 +179,30 @@ private struct ModelTab: View {
                 Section("Ollama Configuration") {
                     TextField("Host", text: $ollamaHost)
                     TextField("Port", value: $ollamaPort, format: .number)
-                    TextField("Model Name", text: $ollamaModel)
+                    HStack {
+                        if availableOllamaModels.isEmpty {
+                            TextField("Model Name", text: $ollamaModel)
+                        } else {
+                            Picker("Model", selection: $ollamaModel) {
+                                ForEach(availableOllamaModels, id: \.self) { model in
+                                    Text(model).tag(model)
+                                }
+                            }
+                        }
+                        Button {
+                            Task { await fetchOllamaModels() }
+                        } label: {
+                            if isFetchingModels {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(isFetchingModels)
+                    }
+
                     Toggle("Vision Model", isOn: $ollamaVision)
                     Text("Enable if your model supports images (e.g. llava, llama3.2-vision)")
                         .font(.caption)
@@ -151,8 +230,15 @@ private struct ModelTab: View {
                         }
                     }
                 }
-                .onChange(of: ollamaHost) { _, _ in updateOllamaBackend() }
-                .onChange(of: ollamaPort) { _, _ in updateOllamaBackend() }
+                .task { await fetchOllamaModels() }
+                .onChange(of: ollamaHost) { _, _ in
+                    updateOllamaBackend()
+                    Task { await fetchOllamaModels() }
+                }
+                .onChange(of: ollamaPort) { _, _ in
+                    updateOllamaBackend()
+                    Task { await fetchOllamaModels() }
+                }
                 .onChange(of: ollamaModel) { _, _ in updateOllamaBackend() }
                 .onChange(of: ollamaVision) { _, _ in updateOllamaBackend() }
             }
@@ -209,6 +295,35 @@ private struct ModelTab: View {
             if cloudModel.isEmpty {
                 cloudModel = provider.defaultModel
             }
+        }
+    }
+
+    private func fetchOllamaModels() async {
+        isFetchingModels = true
+        defer { isFetchingModels = false }
+
+        guard let url = URL(string: "http://\(ollamaHost):\(ollamaPort)/api/tags") else { return }
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return }
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let models = json["models"] as? [[String: Any]]
+            else { return }
+
+            let names = models.compactMap { $0["name"] as? String }.sorted()
+            await MainActor.run {
+                if ollamaModel.isEmpty, let first = names.first {
+                    ollamaModel = first
+                }
+                // Keep the configured model selectable even if the daemon
+                // hasn't reported it yet (e.g. still downloading) — never
+                // silently switch the user off a model they configured.
+                availableOllamaModels = names.contains(ollamaModel) || ollamaModel.isEmpty
+                    ? names
+                    : (names + [ollamaModel]).sorted()
+            }
+        } catch {
+            // Fetch failed — keep text field fallback
         }
     }
 
@@ -302,7 +417,7 @@ private struct PermissionsTab: View {
 
             PermissionRow(
                 title: "Apple Intelligence",
-                description: "Required for AI text cleanup (Apple backend)",
+                description: "Only needed for the Apple On-Device polish backend",
                 granted: permissionManager.appleIntelligenceAvailable,
                 action: { permissionManager.openAppleIntelligenceSettings() },
                 actionLabel: "Open Settings"
@@ -310,7 +425,7 @@ private struct PermissionsTab: View {
 
             PermissionRow(
                 title: "Screen Recording",
-                description: "Optional — enables screenshot context for AI polishing",
+                description: "Optional — enables screen context for AI polishing",
                 granted: permissionManager.screenRecordingGranted,
                 action: { permissionManager.openScreenRecordingSettings() },
                 actionLabel: "Open Settings"
