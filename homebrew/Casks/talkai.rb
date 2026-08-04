@@ -1,6 +1,6 @@
 cask "talkai" do
-  version "1.0.0"
-  sha256 "33da81dd228334a4164a45189c61f1ec099f2b35a9e60b7d799147f7f99c5df5"
+  version "1.2.0"
+  sha256 "d6f77b6cb91cc8551b7a4576a5b1af6e22351f7159daa420a89d69e7e8a6fc6f"
 
   url "https://github.com/rameshvr/talkai/releases/download/v#{version}/TalkAI-v#{version}-mac.dmg"
   name "TalkAI"
