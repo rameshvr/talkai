@@ -1,0 +1,7 @@
+version: 2
+updates:
+  # Keep SHA-pinned actions in workflows up to date via PRs.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
