@@ -213,6 +213,7 @@ final class AppCoordinator {
             }
 
             overlayController.show(pipeline: pipeline)
+            hotkeyManager.interceptsEsc = true
             recordingTask = Task {
                 await pipeline.start()
             }
@@ -228,6 +229,7 @@ final class AppCoordinator {
     }
 
     func handleCancel() async {
+        hotkeyManager.interceptsEsc = false
         recordingTask?.cancel()
         recordingTask = nil
         contextTask?.cancel()
@@ -260,6 +262,7 @@ final class AppCoordinator {
 
             overlayController.hide()
             pipeline.reset()
+            hotkeyManager.interceptsEsc = false
             isStopping = false
         }
     }

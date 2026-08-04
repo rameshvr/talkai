@@ -12,6 +12,13 @@ final class HotkeyManager {
     /// Whether the event tap is active and receiving events.
     private(set) var isActive = false
 
+    /// While true, ESC keyDown events are swallowed and routed to onEscPressed.
+    /// Must stay false when idle so ESC keeps working in other apps.
+    var interceptsEsc = false {
+        didSet { context?.interceptsEsc = interceptsEsc }
+    }
+
+    private var context: HotkeyContext?
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
@@ -81,6 +88,8 @@ final class HotkeyManager {
 
         logger.notice("Event tap created successfully")
         context.eventTap = tap
+        context.interceptsEsc = interceptsEsc
+        self.context = context
         eventTap = tap
         runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
 
@@ -101,6 +110,7 @@ final class HotkeyManager {
         }
         runLoopSource = nil
         eventTap = nil
+        context = nil
         isActive = false
     }
 }
@@ -112,6 +122,8 @@ private final class HotkeyContext {
     let onHotkey: () -> Void
     let onEsc: () -> Void
     var eventTap: CFMachPort?
+    // Read and written only on the main run loop (tap source is on the main run loop).
+    var interceptsEsc = false
 
     init(hotkeyCode: CGKeyCode, onHotkey: @escaping () -> Void, onEsc: @escaping () -> Void) {
         self.hotkeyCode = hotkeyCode
@@ -130,8 +142,10 @@ private func hotkeyCallback(
     guard let refcon else { return Unmanaged.passRetained(event) }
     let context = Unmanaged<HotkeyContext>.fromOpaque(refcon).takeUnretainedValue()
 
-    // Handle ESC key
+    // Handle ESC key — only while a dictation session is active;
+    // otherwise let it pass through to other apps.
     if type == .keyDown && event.getIntegerValueField(.keyboardEventKeycode) == 53 {
+        guard context.interceptsEsc else { return Unmanaged.passRetained(event) }
         context.onEsc()
         return nil
     }
