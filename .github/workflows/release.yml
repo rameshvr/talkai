@@ -19,7 +19,7 @@ jobs:
   release:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history so the tag action can find the last release tag.
           fetch-depth: 0
